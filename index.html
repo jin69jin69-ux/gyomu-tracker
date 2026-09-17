@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>業務遂行トラッカー</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0F1A33">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="業務遂行">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
+
+  :root{
+    --bg:#0F1A33; --card:#17244A; --ink:#F3EEDD; --ink-soft:#9FACC9; --line:#2C3D66;
+    --amber:#D4AF37; --teal:#D4AF37; --danger:#D9705F; --purple:#E8CB6E;
+    --gold-dim:#8A7328; --input-bg:#1C2A52;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:'Zen Kaku Gothic New', sans-serif; -webkit-font-smoothing:antialiased; }
+  .app{ max-width:440px; margin:0 auto; padding:28px 18px 60px; }
+  .eyebrow{ font-family:'JetBrains Mono', monospace; font-size:11px; letter-spacing:.14em; color:var(--ink-soft); text-transform:uppercase; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; }
+  .eyebrow .link{ color:var(--purple); cursor:pointer; text-decoration:underline; letter-spacing:0; text-transform:none; font-family:'Zen Kaku Gothic New', sans-serif; font-size:12px; }
+  h1{ font-size:24px; font-weight:900; margin:0 0 6px; letter-spacing:.01em; }
+  .sub{ font-size:13px; color:var(--ink-soft); margin:0 0 22px; line-height:1.6; }
+
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin-bottom:14px; }
+  .progress-bar-wrap{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+  .progress-bar-wrap b{ font-family:'JetBrains Mono', monospace; font-size:20px; color:var(--amber); }
+  .progress-track{ height:8px; border-radius:4px; background:var(--line); overflow:hidden; margin-bottom:4px; }
+  .progress-fill{ height:100%; background:var(--teal); border-radius:4px; transition:width 0.3s ease; }
+
+  .task-row{ display:flex; align-items:flex-start; gap:12px; padding:12px 0; border-bottom:1px solid var(--line); }
+  .task-row:last-child{ border-bottom:none; }
+  .task-check{
+    width:26px; height:26px; border-radius:50%; border:2px solid var(--line); background:var(--input-bg); flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center; cursor:pointer; margin-top:2px; font-size:14px; color:#101B33;
+  }
+  .task-check.done{ background:var(--teal); border-color:var(--teal); }
+  .task-body{ flex:1; min-width:0; }
+  .task-name{ font-size:14.5px; font-weight:700; line-height:1.4; }
+  .task-row.done .task-name{ color:var(--ink-soft); text-decoration:line-through; }
+  .task-meta{ display:flex; gap:8px; margin-top:4px; flex-wrap:wrap; }
+  .task-badge{
+    font-family:'JetBrains Mono', monospace; font-size:11px; padding:2px 7px; border-radius:6px;
+    background:var(--input-bg); color:var(--ink-soft); border:1px solid var(--line);
+  }
+  .task-actions{ display:flex; gap:6px; flex:0 0 auto; }
+  .task-actions button{ border:none; background:none; color:var(--ink-soft); font-size:12px; cursor:pointer; padding:4px; }
+  .empty-note{ font-size:12.5px; color:var(--ink-soft); text-align:center; padding:18px 0; }
+
+  input[type="text"], input[type="time"], input[type="number"]{
+    width:100%; font-family:'Zen Kaku Gothic New', sans-serif; font-size:16px;
+    padding:12px 14px; border-radius:9px; border:1px solid var(--line); background:var(--input-bg); color:var(--ink);
+  }
+  input[type="time"]{ font-family:'JetBrains Mono', monospace; font-weight:700; }
+  label.field-label{ display:block; font-size:12px; color:var(--ink-soft); margin-bottom:6px; }
+  .field{ margin-bottom:16px; }
+  .toggle-row{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .toggle-row .switch{
+    width:42px; height:24px; border-radius:12px; background:var(--line); position:relative; cursor:pointer; flex:0 0 auto;
+  }
+  .toggle-row .switch.on{ background:var(--teal); }
+  .toggle-row .switch .knob{ position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%; background:#fff; transition:left .15s ease; }
+  .toggle-row .switch.on .knob{ left:20px; }
+
+  .stepper-row{ display:flex; align-items:center; justify-content:center; gap:10px; background:var(--input-bg); border:1px solid var(--line); border-radius:9px; padding:12px; }
+  .stepper-row button{ width:36px; height:36px; border-radius:8px; border:none; background:var(--amber); color:#101B33; font-size:16px; font-weight:700; cursor:pointer; }
+  .min-input{ width:80px; text-align:center; font-family:'JetBrains Mono', monospace; font-size:20px; font-weight:700; padding:6px 4px; border-radius:9px; border:1px solid var(--line); background:var(--input-bg); color:var(--ink); }
+
+  .btn-row{ display:flex; gap:10px; margin-top:18px; }
+  .btn{ flex:1; font-family:'Zen Kaku Gothic New', sans-serif; font-size:14.5px; font-weight:700; padding:13px 10px; border-radius:9px; border:none; cursor:pointer; }
+  .btn-primary{ background:var(--amber); color:#101B33; }
+  .btn-primary:disabled{ background:#3A4568; color:#7A879E; cursor:not-allowed; }
+  .btn-ghost{ background:transparent; color:var(--ink-soft); border:1px solid var(--line); }
+
+  .friend-link{ display:block; text-align:center; font-size:13px; color:var(--ink-soft); text-decoration:underline; margin-top:6px; cursor:pointer; background:none; border:none; width:100%; padding:10px; }
+  .nav-btn-row{ display:flex; gap:10px; margin-top:14px; }
+  .nav-btn{
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+    padding:16px 8px; border-radius:12px; border:1px solid var(--line); background:var(--card);
+    color:var(--ink); font-family:'Zen Kaku Gothic New', sans-serif; font-size:12.5px; font-weight:700; cursor:pointer;
+  }
+  .nav-btn .nav-icon{ font-size:22px; }
+  .nav-btn:active{ background:var(--input-bg); }
+
+  .month-nav{ display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  .month-nav button{ border:none; background:var(--card); border:1px solid var(--line); width:34px; height:34px; border-radius:8px; font-size:15px; cursor:pointer; }
+  .month-nav .label{ font-weight:900; font-size:16px; }
+  .month-stats{ display:flex; justify-content:space-around; text-align:center; margin-bottom:16px; }
+  .month-stats .stat b{ display:block; font-family:'JetBrains Mono', monospace; font-size:20px; color:var(--amber); }
+  .month-stats .stat span{ font-size:11px; color:var(--ink-soft); }
+  .month-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:5px; }
+  .month-dow{ text-align:center; font-size:10.5px; color:var(--ink-soft); font-weight:700; padding-bottom:4px; }
+  .month-cell{
+    aspect-ratio:1; border-radius:9px; border:1px solid var(--line); background:var(--card);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; position:relative;
+    font-family:'JetBrains Mono', monospace;
+  }
+  .month-cell.empty{ visibility:hidden; cursor:default; }
+  .month-cell.today{ border-color:var(--amber); border-width:2px; }
+  .month-cell .daynum{ font-size:12px; font-weight:700; }
+  .month-cell .ratio{ font-size:8.5px; color:var(--ink-soft); }
+  .month-cell.all-done{ background:#2E2712; }
+  .month-cell.all-done .daynum{ color:var(--amber); }
+  .month-cell.partial{ background:#241C0E; }
+  .month-cell.partial .daynum{ color:var(--purple); }
+  .dot{ width:5px; height:5px; border-radius:50%; margin-top:2px; }
+  .dot.all-done{ background:var(--amber); }
+  .dot.partial{ background:var(--purple); }
+
+  .busy-row{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .busy-row input[type="time"]{ flex:1; }
+  .busy-row .to{ font-size:12px; color:var(--ink-soft); }
+  .busy-row button{ border:none; background:none; color:var(--danger); font-size:12px; cursor:pointer; flex:0 0 auto; }
+  .add-busy-btn{
+    width:100%; padding:10px; border-radius:9px; border:1px dashed var(--line); background:none;
+    color:var(--ink-soft); font-size:12.5px; cursor:pointer; margin-bottom:16px;
+  }
+  .sched-slot-row{ display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .sched-slot-row:last-child{ border-bottom:none; }
+  .sched-slot-time{ font-family:'JetBrains Mono', monospace; font-weight:700; color:var(--amber); font-size:13px; min-width:100px; }
+  .sched-slot-name{ font-size:13.5px; flex:1; }
+  .sched-unfit{ background:rgba(217,112,95,0.12); border-radius:9px; padding:12px; margin-top:10px; font-size:12.5px; color:var(--danger); }
+  .sched-busy-note{ font-size:11.5px; color:var(--ink-soft); margin-top:10px; line-height:1.7; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="eyebrow"><span id="eyebrowText">WORK TRACKER</span><span class="link" id="homeLink" style="display:none;">← 今日</span></div>
+  <h1 id="mainTitle">業務遂行トラッカー</h1>
+  <p class="sub" id="mainSub">今日やる業務を登録して、終わったらチェック。月間でも進み具合を確認できます。</p>
+  <div id="wizard"></div>
+</div>
+
+<script>
+  function lsGet(key){ try{ const v = localStorage.getItem(key); return v===null?null:JSON.parse(v); }catch(e){ return null; } }
+  function lsSet(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+
+  const state = {
+    screen: 'today',
+    viewDate: null,       // date string being viewed (today screen / day-detail)
+    editingTaskId: null,  // when set, add-task screen is in edit mode
+    monthCursor: null,    // {year, month} 0-indexed month
+    formName: '', formMin: 30, formTimeOn: false, formTime: '', formDeadline: '',
+    formScope: 'day',        // 'day' | 'month' — which kind of task list the form is editing
+    formStorageKey: null,    // localStorage key the form saves to
+    formReturnScreen: 'today', // screen to go back to after save/cancel/delete
+    schedDeadline: '',
+    schedBusyBlocks: [],   // [{start:'HH:MM', end:'HH:MM'}]
+    schedResult: null,     // computed suggestion, or null if not yet run
+    monthSchedDeadline: '',
+    monthSchedMinPerDay: 60,
+    monthSchedSkipWeekends: true,
+    monthSchedResult: null,
+  };
+
+  function todayStr(){
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+  function fmtDateLabel(dateStr){
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const dow = ['日','月','火','水','木','金','土'][new Date(y,m-1,d).getDay()];
+    return `${m}月${d}日(${dow})`;
+  }
+  function tasksKey(dateStr){ return 'tasks-' + dateStr; }
+  function loadTasks(dateStr){ return lsGet(tasksKey(dateStr)) || []; }
+  function saveTasks(dateStr, tasks){ lsSet(tasksKey(dateStr), tasks); }
+  function monthTasksKey(year, month){ return 'month-tasks-' + year + '-' + String(month+1).padStart(2,'0'); }
+  function loadMonthTasks(year, month){ return lsGet(monthTasksKey(year, month)) || []; }
+  function saveMonthTasks(year, month, tasks){ lsSet(monthTasksKey(year, month), tasks); }
+  function loadTasksByKey(key){ return lsGet(key) || []; }
+  function saveTasksByKey(key, tasks){ lsSet(key, tasks); }
+  function schedKey(dateStr){ return 'sched-' + dateStr; }
+  function loadSchedSettings(dateStr){ return lsGet(schedKey(dateStr)) || { deadline:'', busyBlocks:[] }; }
+  function saveSchedSettings(dateStr, settings){ lsSet(schedKey(dateStr), settings); }
+  function toMin(hhmm){ const [h,m] = hhmm.split(':').map(Number); return h*60+m; }
+  function toHHMM(min){
+    min = Math.max(0, Math.round(min));
+    const h = Math.floor(min/60) % 24, m = min % 60;
+    return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+  }
+
+  const wizard = document.getElementById('wizard');
+  const eyebrowText = document.getElementById('eyebrowText');
+  const homeLink = document.getElementById('homeLink');
+  const mainTitle = document.getElementById('mainTitle');
+  const mainSub = document.getElementById('mainSub');
+
+  homeLink.addEventListener('click', ()=>{ state.screen='today'; state.viewDate=todayStr(); render(); });
+
+  function render(){
+    if(!state.viewDate) state.viewDate = todayStr();
+    if(!state.monthCursor){
+      const d = new Date();
+      state.monthCursor = { year: d.getFullYear(), month: d.getMonth() };
+    }
+    const s = state.screen;
+    homeLink.style.display = (s === 'today') ? 'none' : 'inline';
+
+    if(s === 'today'){
+      eyebrowText.textContent = 'WORK TRACKER';
+      mainTitle.textContent = '今日の業務';
+      mainSub.textContent = fmtDateLabel(state.viewDate) + ' にやる業務を管理します。';
+      renderToday();
+    } else if(s === 'add-task'){
+      eyebrowText.textContent = 'WORK TRACKER · 業務登録';
+      mainTitle.textContent = state.editingTaskId ? '業務を編集' : '業務を追加';
+      mainSub.textContent = '業務名と、かかりそうな時間を入力してください。';
+      renderAddTask();
+    } else if(s === 'month'){
+      eyebrowText.textContent = 'WORK TRACKER · 月間ビュー';
+      mainTitle.textContent = '月間の進み具合';
+      mainSub.textContent = '今月中の業務と、日ごとの完了状況を確認できます。';
+      renderMonth();
+    } else if(s === 'day-detail'){
+      eyebrowText.textContent = 'WORK TRACKER · 日別詳細';
+      mainTitle.textContent = fmtDateLabel(state.viewDate);
+      mainSub.textContent = 'この日の業務一覧です。';
+      renderDayDetail();
+    } else if(s === 'schedule'){
+      eyebrowText.textContent = 'WORK TRACKER · スケジュール提案';
+      mainTitle.textContent = '今日のスケジュールを組む';
+      mainSub.textContent = '完了させたい時刻と、動けない時間帯を入力してください。';
+      renderSchedule();
+    } else if(s === 'month-schedule'){
+      eyebrowText.textContent = 'WORK TRACKER · 月間スケジュール提案';
+      mainTitle.textContent = '今月のスケジュールを組む';
+      mainSub.textContent = '期限日と1日に使える時間から、今月の業務を各日に振り分けます。';
+      renderMonthSchedule();
+    }
+  }
+
+  // --- Today screen ---
+  function renderToday(){
+    const tasks = loadTasks(state.viewDate);
+    renderTaskListScreen(tasks, {
+      storageKey: tasksKey(state.viewDate),
+      scope: 'day',
+      returnScreen: 'today',
+      showMonthLink: true,
+      addLabel: '＋ 業務を追加',
+    });
+  }
+
+  function renderTaskListScreen(tasks, opts){
+    const sorted = [...tasks].sort((a,b)=>{
+      if(a.time && b.time) return a.time < b.time ? -1 : 1;
+      if(a.time && !b.time) return -1;
+      if(!a.time && b.time) return 1;
+      return 0;
+    });
+    const doneCount = tasks.filter(t=>t.done).length;
+    const total = tasks.length;
+    const pct = total ? Math.round((doneCount/total)*100) : 0;
+
+    const rowsHtml = sorted.length ? sorted.map(t=>`
+      <div class="task-row ${t.done?'done':''}">
+        <button class="task-check ${t.done?'done':''}" data-id="${t.id}">${t.done?'✓':''}</button>
+        <div class="task-body">
+          <div class="task-name">${t.name}</div>
+          <div class="task-meta">
+            <span class="task-badge">${t.min}分</span>
+            ${t.time ? `<span class="task-badge">${t.time}〜</span>` : ''}
+            ${t.deadline ? `<span class="task-badge">期限:${fmtDateLabel(t.deadline)}</span>` : ''}
+          </div>
+        </div>
+        <div class="task-actions">
+          <button data-edit="${t.id}">編集</button>
+          <button data-del="${t.id}">削除</button>
+        </div>
+      </div>
+    `).join('') : `<div class="empty-note">まだ業務が登録されていません。</div>`;
+
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="progress-bar-wrap"><span>進み具合</span><b>${doneCount}/${total}</b></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
+      </div>
+      <div class="card">${rowsHtml}</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="addTaskBtn">${opts.addLabel}</button>
+      </div>
+      ${opts.showMonthLink ? `
+        <div class="nav-btn-row">
+          <button class="nav-btn" id="goSchedule"><span class="nav-icon">🕐</span>今日のスケジュールを組む</button>
+          <button class="nav-btn" id="goMonth"><span class="nav-icon">📅</span>月間ビューを見る</button>
+        </div>
+      ` : `<div class="btn-row"><button class="btn btn-ghost" id="backMonth">月間ビューに戻る</button></div>`}
+    `;
+
+    wizard.querySelectorAll('.task-check').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.id;
+        const list = loadTasksByKey(opts.storageKey);
+        const t = list.find(x=>String(x.id)===id);
+        if(t) t.done = !t.done;
+        saveTasksByKey(opts.storageKey, list);
+        render();
+      });
+    });
+    wizard.querySelectorAll('[data-edit]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.edit;
+        const t = loadTasksByKey(opts.storageKey).find(x=>String(x.id)===id);
+        if(!t) return;
+        state.editingTaskId = id;
+        state.formName = t.name; state.formMin = t.min;
+        state.formTimeOn = !!t.time; state.formTime = t.time || ''; state.formDeadline = t.deadline || '';
+        state.formScope = opts.scope;
+        state.formStorageKey = opts.storageKey;
+        state.formReturnScreen = opts.returnScreen;
+        state.screen = 'add-task';
+        render();
+      });
+    });
+    wizard.querySelectorAll('[data-del]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.del;
+        const list = loadTasksByKey(opts.storageKey).filter(x=>String(x.id)!==id);
+        saveTasksByKey(opts.storageKey, list);
+        render();
+      });
+    });
+    const addBtn = document.getElementById('addTaskBtn');
+    if(addBtn) addBtn.addEventListener('click', ()=>{
+      state.editingTaskId = null;
+      state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = '';
+      state.formScope = opts.scope;
+      state.formStorageKey = opts.storageKey;
+      state.formReturnScreen = opts.returnScreen;
+      state.screen = 'add-task';
+      render();
+    });
+    const goMonth = document.getElementById('goMonth');
+    if(goMonth) goMonth.addEventListener('click', ()=>{ state.screen='month'; render(); });
+    const goSchedule = document.getElementById('goSchedule');
+    if(goSchedule) goSchedule.addEventListener('click', ()=>{
+      const saved = loadSchedSettings(state.viewDate);
+      state.schedDeadline = saved.deadline || '';
+      state.schedBusyBlocks = saved.busyBlocks && saved.busyBlocks.length ? saved.busyBlocks : [];
+      state.schedResult = null;
+      state.screen = 'schedule';
+      render();
+    });
+    const backMonth = document.getElementById('backMonth');
+    if(backMonth) backMonth.addEventListener('click', ()=>{ state.screen='month'; render(); });
+  }
+
+  // --- Add/Edit task screen ---
+  function renderAddTask(){
+    const showTimeOption = state.formScope === 'day';
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="field">
+          <label class="field-label">業務名</label>
+          <input type="text" id="taskName" placeholder="例：週案の作成" value="${state.formName}">
+        </div>
+        <div class="field">
+          <label class="field-label">かかりそうな時間</label>
+          <div class="stepper-row">
+            <button id="dec5">−5</button>
+            <button id="dec1">−1</button>
+            <input type="number" class="min-input" id="taskMin" value="${state.formMin}" min="5" max="480">
+            <button id="inc1">＋1</button>
+            <button id="inc5">＋5</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">期限（任意）</label>
+          <input type="date" id="taskDeadline" value="${state.formDeadline}">
+          <div class="q-hint" style="font-size:11.5px; margin-top:6px;">期限が近い業務ほど、スケジュールを組むときに優先されます。</div>
+        </div>
+        ${showTimeOption ? `
+          <div class="toggle-row">
+            <label class="field-label" style="margin:0;">取り組む時間を決める</label>
+            <div class="switch ${state.formTimeOn?'on':''}" id="timeToggle"><div class="knob"></div></div>
+          </div>
+          ${state.formTimeOn ? `
+            <div class="field">
+              <label class="field-label">開始予定時刻</label>
+              <input type="time" id="taskTime" value="${state.formTime}">
+            </div>
+          ` : ''}
+        ` : `<div class="q-hint" style="font-size:12px; color:var(--ink-soft); margin-bottom:6px;">今月中に取り組む業務として登録されます（特定の日は決めません）。</div>`}
+        <div class="btn-row">
+          <button class="btn btn-ghost" id="cancelBtn">キャンセル</button>
+          <button class="btn btn-primary" id="saveBtn" ${state.formName.trim() ? '' : 'disabled'}>保存する</button>
+        </div>
+        ${state.editingTaskId ? `<div class="btn-row"><button class="btn btn-ghost" id="deleteBtn" style="color:var(--danger);">この業務を削除</button></div>` : ''}
+      </div>
+    `;
+    const nameEl = document.getElementById('taskName');
+    const minEl = document.getElementById('taskMin');
+    const saveBtn = document.getElementById('saveBtn');
+    nameEl.addEventListener('input', ()=>{
+      state.formName = nameEl.value;
+      saveBtn.disabled = !state.formName.trim();
+    });
+    minEl.addEventListener('input', ()=>{ if(minEl.value !== '') state.formMin = Number(minEl.value); });
+    minEl.addEventListener('blur', ()=>{
+      state.formMin = Math.max(5, Math.min(480, Math.round(state.formMin)||30));
+      minEl.value = state.formMin;
+    });
+    function adjustMin(delta){
+      state.formMin = Math.max(5, Math.min(480, state.formMin + delta));
+      minEl.value = state.formMin;
+    }
+    document.getElementById('dec5').addEventListener('click', ()=>adjustMin(-5));
+    document.getElementById('dec1').addEventListener('click', ()=>adjustMin(-1));
+    document.getElementById('inc1').addEventListener('click', ()=>adjustMin(1));
+    document.getElementById('inc5').addEventListener('click', ()=>adjustMin(5));
+    const timeToggle = document.getElementById('timeToggle');
+    if(timeToggle) timeToggle.addEventListener('click', ()=>{
+      state.formTimeOn = !state.formTimeOn;
+      render();
+    });
+    const timeEl = document.getElementById('taskTime');
+    if(timeEl) timeEl.addEventListener('input', ()=>{ state.formTime = timeEl.value; });
+    document.getElementById('taskDeadline').addEventListener('input', (e)=>{ state.formDeadline = e.target.value; });
+
+    document.getElementById('cancelBtn').addEventListener('click', ()=>{
+      state.screen = state.formReturnScreen;
+      render();
+    });
+    saveBtn.addEventListener('click', ()=>{
+      const list = loadTasksByKey(state.formStorageKey);
+      const timeVal = (showTimeOption && state.formTimeOn && state.formTime) ? state.formTime : '';
+      if(state.editingTaskId){
+        const t = list.find(x=>String(x.id)===state.editingTaskId);
+        if(t){ t.name = state.formName.trim(); t.min = state.formMin; t.time = timeVal; t.deadline = state.formDeadline || ''; }
+      } else {
+        list.push({ id: Date.now() + '-' + Math.floor(Math.random()*1000), name: state.formName.trim(), min: state.formMin, time: timeVal, deadline: state.formDeadline || '', done: false });
+      }
+      saveTasksByKey(state.formStorageKey, list);
+      state.screen = state.formReturnScreen;
+      render();
+    });
+    const delBtn = document.getElementById('deleteBtn');
+    if(delBtn) delBtn.addEventListener('click', ()=>{
+      const list = loadTasksByKey(state.formStorageKey).filter(x=>String(x.id)!==state.editingTaskId);
+      saveTasksByKey(state.formStorageKey, list);
+      state.screen = state.formReturnScreen;
+      render();
+    });
+  }
+
+  // --- Day detail (from month view) ---
+  function renderDayDetail(){
+    const tasks = loadTasks(state.viewDate);
+    renderTaskListScreen(tasks, {
+      storageKey: tasksKey(state.viewDate),
+      scope: 'day',
+      returnScreen: 'day-detail',
+      showMonthLink: false,
+      addLabel: '＋ 業務を追加',
+    });
+  }
+
+  // --- Schedule builder: fit today's undone tasks into the free time before a deadline ---
+  function computeSchedule(dateStr, deadline, busyBlocks){
+    const nowD = new Date();
+    const isToday = dateStr === todayStr();
+    const dayStartMin = isToday ? (nowD.getHours()*60 + nowD.getMinutes()) : 9*60;
+    const deadlineMin = toMin(deadline);
+
+    const allTasks = loadTasks(dateStr).filter(t => !t.done);
+    const fixedBlocks = allTasks
+      .filter(t => t.time)
+      .map(t => ({ start: toMin(t.time), end: toMin(t.time) + t.min, label: t.name }));
+    const flexibleTasks = allTasks.filter(t => !t.time);
+    // Tasks with an earlier deadline are more urgent and get first pick of today's free time.
+    // Tasks without a deadline are treated as least urgent and scheduled after all dated ones,
+    // keeping their original relative order.
+    flexibleTasks.sort((a,b)=>{
+      const da = a.deadline || '9999-99-99';
+      const db = b.deadline || '9999-99-99';
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+
+    const busy = busyBlocks
+      .filter(b => b.start && b.end)
+      .map(b => ({ start: toMin(b.start), end: toMin(b.end), label: '予定あり' }));
+
+    let occupied = [...busy, ...fixedBlocks].sort((a,b)=> a.start - b.start);
+    // merge overlapping occupied intervals so gap-finding is simple
+    const merged = [];
+    occupied.forEach(b=>{
+      if(merged.length && b.start <= merged[merged.length-1].end){
+        merged[merged.length-1].end = Math.max(merged[merged.length-1].end, b.end);
+      } else {
+        merged.push({ ...b });
+      }
+    });
+
+    // compute free gaps within [dayStartMin, deadlineMin]
+    const gaps = [];
+    let cursor = dayStartMin;
+    merged.forEach(b=>{
+      if(b.start > cursor) gaps.push({ start: cursor, end: Math.min(b.start, deadlineMin) });
+      cursor = Math.max(cursor, b.end);
+    });
+    if(cursor < deadlineMin) gaps.push({ start: cursor, end: deadlineMin });
+    const freeGaps = gaps.filter(g => g.end > g.start);
+
+    // greedily place flexible tasks into the first gap with enough room
+    const placed = [];
+    const unfit = [];
+    flexibleTasks.forEach(t=>{
+      let done = false;
+      for(const g of freeGaps){
+        if(g.end - g.start >= t.min){
+          placed.push({ task: t, start: g.start, end: g.start + t.min });
+          g.start += t.min;
+          done = true;
+          break;
+        }
+      }
+      if(!done) unfit.push(t);
+    });
+
+    const fixedForDisplay = fixedBlocks.map(b => ({ task: { name: b.label, min: b.end - b.start }, start: b.start, end: b.end, fixed: true }));
+    const combined = [...placed, ...fixedForDisplay].sort((a,b)=> a.start - b.start);
+
+    return { combined, unfit, dayStartMin, deadlineMin, busyCount: busy.length };
+  }
+
+  function renderSchedule(){
+    if(state.schedResult){
+      renderScheduleResult();
+      return;
+    }
+    const blocksHtml = state.schedBusyBlocks.map((b,i)=>`
+      <div class="busy-row">
+        <input type="time" data-bstart="${i}" value="${b.start||''}">
+        <span class="to">〜</span>
+        <input type="time" data-bend="${i}" value="${b.end||''}">
+        <button data-brm="${i}">削除</button>
+      </div>
+    `).join('');
+
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="field">
+          <label class="field-label">何時までに完了させたいですか？</label>
+          <input type="time" id="deadlineInput" value="${state.schedDeadline}">
+        </div>
+        <label class="field-label">この時間帯は業務に取り組めない（任意）</label>
+        <div id="busyList">${blocksHtml}</div>
+        <button class="add-busy-btn" id="addBusyBtn">＋ 動けない時間帯を追加</button>
+        <div class="btn-row">
+          <button class="btn btn-ghost" id="backToday">今日の業務に戻る</button>
+          <button class="btn btn-primary" id="runSchedule">スケジュールを組む</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('deadlineInput').addEventListener('input', (e)=>{ state.schedDeadline = e.target.value; });
+    wizard.querySelectorAll('[data-bstart]').forEach(el=>{
+      el.addEventListener('input', ()=>{ state.schedBusyBlocks[Number(el.dataset.bstart)].start = el.value; });
+    });
+    wizard.querySelectorAll('[data-bend]').forEach(el=>{
+      el.addEventListener('input', ()=>{ state.schedBusyBlocks[Number(el.dataset.bend)].end = el.value; });
+    });
+    wizard.querySelectorAll('[data-brm]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        state.schedBusyBlocks.splice(Number(btn.dataset.brm), 1);
+        render();
+      });
+    });
+    document.getElementById('addBusyBtn').addEventListener('click', ()=>{
+      state.schedBusyBlocks.push({ start:'', end:'' });
+      render();
+    });
+    document.getElementById('backToday').addEventListener('click', ()=>{ state.screen='today'; render(); });
+    document.getElementById('runSchedule').addEventListener('click', ()=>{
+      if(!state.schedDeadline) return;
+      saveSchedSettings(state.viewDate, { deadline: state.schedDeadline, busyBlocks: state.schedBusyBlocks });
+      state.schedResult = computeSchedule(state.viewDate, state.schedDeadline, state.schedBusyBlocks);
+      render();
+    });
+  }
+
+  function renderScheduleResult(){
+    const r = state.schedResult;
+    const rowsHtml = r.combined.length ? r.combined.map(item=>`
+      <div class="sched-slot-row">
+        <div class="sched-slot-time">${toHHMM(item.start)}〜${toHHMM(item.end)}</div>
+        <div class="sched-slot-name">${item.task.name}${item.fixed ? '（固定）' : ''}</div>
+      </div>
+    `).join('') : `<div class="empty-note">配置できる業務がありませんでした。</div>`;
+
+    const unfitHtml = r.unfit.length ? `
+      <div class="sched-unfit">
+        以下の業務は、${toHHMM(r.deadlineMin)}までの空き時間には収まりませんでした：<br>
+        ${r.unfit.map(t=>'・' + t.name + '（' + t.min + '分）').join('<br>')}
+      </div>
+    ` : '';
+
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:12px;">${toHHMM(r.dayStartMin)}〜${toHHMM(r.deadlineMin)} のおすすめスケジュール</div>
+        ${rowsHtml}
+        ${unfitHtml}
+        <div class="sched-busy-note">「（固定）」は、すでに開始時刻が決まっている業務です。動けない時間帯として扱っています。</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="editConditions">条件を変える</button>
+        <button class="btn btn-primary" id="applySchedule">この時間で登録する</button>
+      </div>
+      <div class="btn-row"><button class="btn btn-ghost" id="backToday2">今日の業務に戻る</button></div>
+    `;
+    document.getElementById('editConditions').addEventListener('click', ()=>{
+      state.schedResult = null;
+      render();
+    });
+    document.getElementById('applySchedule').addEventListener('click', ()=>{
+      const list = loadTasks(state.viewDate);
+      r.combined.forEach(item=>{
+        if(item.fixed) return;
+        const t = list.find(x=>String(x.id)===String(item.task.id));
+        if(t) t.time = toHHMM(item.start);
+      });
+      saveTasks(state.viewDate, list);
+      state.schedResult = null;
+      state.screen = 'today';
+      render();
+    });
+    document.getElementById('backToday2').addEventListener('click', ()=>{ state.schedResult = null; state.screen='today'; render(); });
+  }
+
+  // --- Monthly schedule builder: fit "this month" tasks onto specific days ---
+  function computeMonthSchedule(year, month, deadlineDateStr, minPerDay, skipWeekends){
+    const monthTasks = loadMonthTasks(year, month).filter(t => !t.done);
+    const todayD = todayStr();
+    const numDays = daysInMonth(year, month);
+
+    // candidate days: from today (or day 1 if viewing a future month) through the deadline date, inclusive
+    const candidates = [];
+    for(let d=1; d<=numDays; d++){
+      const ds = monthDateStr(year, month, d);
+      if(ds < todayD) continue;
+      if(ds > deadlineDateStr) break;
+      const dow = new Date(year, month, d).getDay();
+      if(skipWeekends && (dow === 0 || dow === 6)) continue;
+      const dayTasks = loadTasks(ds).filter(t => !t.done);
+      const used = dayTasks.reduce((sum,t)=> sum + t.min, 0);
+      candidates.push({ dateStr: ds, remaining: Math.max(0, minPerDay - used) });
+    }
+
+    const placed = [];   // {task, dateStr, min, part, totalParts} — one entry per day-chunk
+    const unfit = [];    // {task, shortfall, scheduledMin} — tasks not fully placed before the deadline
+
+    // Tasks with an earlier deadline are more urgent and get first pick of the available time.
+    // Tasks without a deadline are treated as least urgent and scheduled after all dated ones,
+    // keeping their original relative order.
+    const sortedTasks = [...monthTasks].sort((a,b)=>{
+      const da = a.deadline || '9999-99-99';
+      const db = b.deadline || '9999-99-99';
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+
+    sortedTasks.forEach(t=>{
+      let remainingNeed = t.min;
+      const chunks = [];
+      for(const c of candidates){
+        if(remainingNeed <= 0) break;
+        if(t.deadline && c.dateStr > t.deadline) continue; // don't schedule past this task's own deadline
+        if(c.remaining <= 0) continue;
+        const take = Math.min(remainingNeed, c.remaining);
+        chunks.push({ dateStr: c.dateStr, min: take });
+        c.remaining -= take;
+        remainingNeed -= take;
+      }
+      chunks.forEach((chunk, idx)=>{
+        placed.push({ task: t, dateStr: chunk.dateStr, min: chunk.min, part: idx+1, totalParts: chunks.length });
+      });
+      if(remainingNeed > 0){
+        unfit.push({ task: t, shortfall: remainingNeed, scheduledMin: t.min - remainingNeed });
+      }
+    });
+
+    return { placed, unfit, candidateCount: candidates.length };
+  }
+
+  function renderMonthSchedule(){
+    if(state.monthSchedResult){
+      renderMonthScheduleResult();
+      return;
+    }
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="field">
+          <label class="field-label">いつまでに終わらせたいですか？（期限日）</label>
+          <input type="date" id="monthDeadlineInput" value="${state.monthSchedDeadline}">
+        </div>
+        <div class="field">
+          <label class="field-label">1日に使える時間</label>
+          <div class="stepper-row">
+            <button id="mdec5">−5</button>
+            <button id="mdec1">−1</button>
+            <input type="number" class="min-input" id="minPerDayInput" value="${state.monthSchedMinPerDay}" min="5" max="480">
+            <button id="minc1">＋1</button>
+            <button id="minc5">＋5</button>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <label class="field-label" style="margin:0;">土日は含めない</label>
+          <div class="switch ${state.monthSchedSkipWeekends?'on':''}" id="skipWeekendToggle"><div class="knob"></div></div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" id="backMonthFromSched">月間ビューに戻る</button>
+          <button class="btn btn-primary" id="runMonthSchedule">スケジュールを組む</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('monthDeadlineInput').addEventListener('input', (e)=>{ state.monthSchedDeadline = e.target.value; });
+    const minEl = document.getElementById('minPerDayInput');
+    minEl.addEventListener('input', ()=>{ if(minEl.value !== '') state.monthSchedMinPerDay = Number(minEl.value); });
+    minEl.addEventListener('blur', ()=>{
+      state.monthSchedMinPerDay = Math.max(5, Math.min(480, Math.round(state.monthSchedMinPerDay)||60));
+      minEl.value = state.monthSchedMinPerDay;
+    });
+    function adjustMin(delta){
+      state.monthSchedMinPerDay = Math.max(5, Math.min(480, state.monthSchedMinPerDay + delta));
+      minEl.value = state.monthSchedMinPerDay;
+    }
+    document.getElementById('mdec5').addEventListener('click', ()=>adjustMin(-5));
+    document.getElementById('mdec1').addEventListener('click', ()=>adjustMin(-1));
+    document.getElementById('minc1').addEventListener('click', ()=>adjustMin(1));
+    document.getElementById('minc5').addEventListener('click', ()=>adjustMin(5));
+    document.getElementById('skipWeekendToggle').addEventListener('click', ()=>{
+      state.monthSchedSkipWeekends = !state.monthSchedSkipWeekends;
+      render();
+    });
+    document.getElementById('backMonthFromSched').addEventListener('click', ()=>{ state.screen='month'; render(); });
+    document.getElementById('runMonthSchedule').addEventListener('click', ()=>{
+      if(!state.monthSchedDeadline) return;
+      const { year, month } = state.monthCursor;
+      state.monthSchedResult = computeMonthSchedule(year, month, state.monthSchedDeadline, state.monthSchedMinPerDay, state.monthSchedSkipWeekends);
+      render();
+    });
+  }
+
+  function renderMonthScheduleResult(){
+    const r = state.monthSchedResult;
+    const rowsHtml = r.placed.length ? r.placed.map(item=>`
+      <div class="sched-slot-row">
+        <div class="sched-slot-time">${fmtDateLabel(item.dateStr)}</div>
+        <div class="sched-slot-name">${item.task.name}${item.totalParts > 1 ? `（${item.part}/${item.totalParts}）` : ''}（${item.min}分）</div>
+      </div>
+    `).join('') : `<div class="empty-note">配置できる業務がありませんでした。</div>`;
+
+    const unfitHtml = r.unfit.length ? `
+      <div class="sched-unfit">
+        期限日までの空き時間では、以下の業務を全ては割り振れませんでした：<br>
+        ${r.unfit.map(u => '・' + u.task.name + '（' + (u.scheduledMin > 0 ? `${u.scheduledMin}分は割り振り済み、残り${u.shortfall}分が` : `${u.shortfall}分`) + '不足）').join('<br>')}
+      </div>
+    ` : '';
+
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:12px;">${fmtDateLabel(state.monthSchedDeadline)} までのおすすめスケジュール</div>
+        ${rowsHtml}
+        ${unfitHtml}
+        <div class="sched-busy-note">1つの業務が1日で収まらない場合は、複数日に分けて割り振ります。「登録する」を押すと、それぞれの日の業務一覧に追加されます。完全に割り振れた業務は今月の業務リストから外れ、一部だけ割り振れた業務は残り分だけ月間リストに残ります。</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="editMonthConditions">条件を変える</button>
+        <button class="btn btn-primary" id="applyMonthSchedule">この内容で登録する</button>
+      </div>
+      <div class="btn-row"><button class="btn btn-ghost" id="backMonthFromResult">月間ビューに戻る</button></div>
+    `;
+    document.getElementById('editMonthConditions').addEventListener('click', ()=>{
+      state.monthSchedResult = null;
+      render();
+    });
+    document.getElementById('applyMonthSchedule').addEventListener('click', ()=>{
+      const { year, month } = state.monthCursor;
+      const monthList = loadMonthTasks(year, month);
+
+      // add each scheduled chunk to its day's task list
+      r.placed.forEach(item=>{
+        const dayList = loadTasks(item.dateStr);
+        const label = item.totalParts > 1 ? `${item.task.name}（${item.part}/${item.totalParts}）` : item.task.name;
+        dayList.push({ id: Date.now() + '-' + Math.floor(Math.random()*1000), name: label, min: item.min, time: '', done: false });
+        saveTasks(item.dateStr, dayList);
+      });
+
+      // sum how much of each original task got scheduled
+      const scheduledByTaskId = {};
+      r.placed.forEach(item=>{
+        const key = String(item.task.id);
+        scheduledByTaskId[key] = (scheduledByTaskId[key] || 0) + item.min;
+      });
+
+      // fully-scheduled tasks are removed; partially-scheduled tasks shrink to their remaining minutes
+      const updatedMonthList = [];
+      monthList.forEach(t=>{
+        const scheduled = scheduledByTaskId[String(t.id)] || 0;
+        if(scheduled <= 0){ updatedMonthList.push(t); return; }
+        const remaining = t.min - scheduled;
+        if(remaining > 0){ updatedMonthList.push({ ...t, min: remaining }); }
+        // if remaining <= 0, the task was fully scheduled — drop it from the month list
+      });
+      saveMonthTasks(year, month, updatedMonthList);
+
+      state.monthSchedResult = null;
+      state.screen = 'month';
+      render();
+    });
+    document.getElementById('backMonthFromResult').addEventListener('click', ()=>{ state.monthSchedResult = null; state.screen='month'; render(); });
+  }
+
+  // --- Month view ---
+  function daysInMonth(year, month){ return new Date(year, month+1, 0).getDate(); }
+  function monthDateStr(year, month, day){
+    return year + '-' + String(month+1).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+  }
+
+  function renderMonth(){
+    const { year, month } = state.monthCursor;
+    const numDays = daysInMonth(year, month);
+    const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
+    const today = todayStr();
+
+    let totalTasks = 0, totalDone = 0, daysWithTasks = 0, daysAllDone = 0;
+    const dayStats = [];
+    for(let d=1; d<=numDays; d++){
+      const ds = monthDateStr(year, month, d);
+      const tasks = loadTasks(ds);
+      const done = tasks.filter(t=>t.done).length;
+      dayStats.push({ day:d, dateStr:ds, total:tasks.length, done });
+      if(tasks.length){
+        daysWithTasks++;
+        totalTasks += tasks.length;
+        totalDone += done;
+        if(done === tasks.length) daysAllDone++;
+      }
+    }
+    const overallPct = totalTasks ? Math.round((totalDone/totalTasks)*100) : 0;
+
+    const monthTaskKey = monthTasksKey(year, month);
+    const monthTasks = loadMonthTasks(year, month);
+    const monthDone = monthTasks.filter(t=>t.done).length;
+    const monthTotal = monthTasks.length;
+    const monthPct = monthTotal ? Math.round((monthDone/monthTotal)*100) : 0;
+    const monthTaskRowsHtml = monthTasks.length ? monthTasks.map(t=>`
+      <div class="task-row ${t.done?'done':''}">
+        <button class="task-check ${t.done?'done':''}" data-mid="${t.id}">${t.done?'✓':''}</button>
+        <div class="task-body">
+          <div class="task-name">${t.name}</div>
+          <div class="task-meta"><span class="task-badge">${t.min}分</span>${t.deadline ? `<span class="task-badge">期限:${fmtDateLabel(t.deadline)}</span>` : ''}</div>
+        </div>
+        <div class="task-actions">
+          <button data-medit="${t.id}">編集</button>
+          <button data-mdel="${t.id}">削除</button>
+        </div>
+      </div>
+    `).join('') : `<div class="empty-note">今月中にやる業務はまだ登録されていません。</div>`;
+
+    const dowLabels = ['日','月','火','水','木','金','土'].map(d=>`<div class="month-dow">${d}</div>`).join('');
+    const blanks = Array.from({length:firstDow}).map(()=>`<div class="month-cell empty"></div>`).join('');
+    const cellsHtml = dayStats.map(ds=>{
+      let cls = 'month-cell';
+      if(ds.dateStr === today) cls += ' today';
+      let dotHtml = '';
+      if(ds.total > 0){
+        if(ds.done === ds.total){ cls += ' all-done'; dotHtml = `<div class="dot all-done"></div>`; }
+        else { cls += ' partial'; dotHtml = `<div class="dot partial"></div>`; }
+      }
+      return `<div class="${cls}" data-date="${ds.dateStr}">
+        <div class="daynum">${ds.day}</div>
+        ${ds.total ? `<div class="ratio">${ds.done}/${ds.total}</div>` : dotHtml}
+      </div>`;
+    }).join('');
+
+    wizard.innerHTML = `
+      <div class="month-nav">
+        <button id="prevMonth">◀</button>
+        <div class="label">${year}年${month+1}月</div>
+        <button id="nextMonth">▶</button>
+      </div>
+
+      <div class="card">
+        <div class="progress-bar-wrap"><span>${month+1}月中にやる業務</span><b>${monthDone}/${monthTotal}</b></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${monthPct}%;"></div></div>
+      </div>
+      <div class="card">${monthTaskRowsHtml}</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="addMonthTaskBtn">＋ 今月の業務を追加</button>
+      </div>
+      <div class="nav-btn-row">
+        <button class="nav-btn" id="goMonthSchedule" style="flex:none; width:100%;"><span class="nav-icon">🗓️</span>今月のスケジュールを組む</button>
+      </div>
+
+      <div class="card" style="margin-top:18px;">
+        <div class="month-stats">
+          <div class="stat"><b>${daysWithTasks}</b><span>業務のある日</span></div>
+          <div class="stat"><b>${daysAllDone}</b><span>全完了の日</span></div>
+          <div class="stat"><b>${overallPct}%</b><span>全体完了率</span></div>
+        </div>
+        <div class="month-grid">${dowLabels}${blanks}${cellsHtml}</div>
+      </div>
+      <div class="btn-row"><button class="btn btn-ghost" id="backToday">今日に戻る</button></div>
+    `;
+    wizard.querySelectorAll('[data-mid]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.mid;
+        const list = loadMonthTasks(year, month);
+        const t = list.find(x=>String(x.id)===id);
+        if(t) t.done = !t.done;
+        saveMonthTasks(year, month, list);
+        renderMonth();
+      });
+    });
+    wizard.querySelectorAll('[data-medit]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.medit;
+        const t = loadMonthTasks(year, month).find(x=>String(x.id)===id);
+        if(!t) return;
+        state.editingTaskId = id;
+        state.formName = t.name; state.formMin = t.min;
+        state.formTimeOn = false; state.formTime = ''; state.formDeadline = t.deadline || '';
+        state.formScope = 'month';
+        state.formStorageKey = monthTaskKey;
+        state.formReturnScreen = 'month';
+        state.screen = 'add-task';
+        render();
+      });
+    });
+    wizard.querySelectorAll('[data-mdel]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.mdel;
+        const list = loadMonthTasks(year, month).filter(x=>String(x.id)!==id);
+        saveMonthTasks(year, month, list);
+        renderMonth();
+      });
+    });
+    document.getElementById('addMonthTaskBtn').addEventListener('click', ()=>{
+      state.editingTaskId = null;
+      state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = '';
+      state.formScope = 'month';
+      state.formStorageKey = monthTaskKey;
+      state.formReturnScreen = 'month';
+      state.screen = 'add-task';
+      render();
+    });
+    document.getElementById('goMonthSchedule').addEventListener('click', ()=>{
+      if(!state.monthSchedDeadline){
+        const lastDay = daysInMonth(year, month);
+        state.monthSchedDeadline = monthDateStr(year, month, lastDay);
+      }
+      state.monthSchedResult = null;
+      state.screen = 'month-schedule';
+      render();
+    });
+    document.getElementById('prevMonth').addEventListener('click', ()=>{
+      let { year, month } = state.monthCursor;
+      month--; if(month < 0){ month = 11; year--; }
+      state.monthCursor = { year, month };
+      render();
+    });
+    document.getElementById('nextMonth').addEventListener('click', ()=>{
+      let { year, month } = state.monthCursor;
+      month++; if(month > 11){ month = 0; year++; }
+      state.monthCursor = { year, month };
+      render();
+    });
+    wizard.querySelectorAll('.month-cell[data-date]').forEach(cell=>{
+      cell.addEventListener('click', ()=>{
+        state.viewDate = cell.dataset.date;
+        state.screen = 'day-detail';
+        render();
+      });
+    });
+    document.getElementById('backToday').addEventListener('click', ()=>{ state.screen='today'; state.viewDate=todayStr(); render(); });
+  }
+
+  state.viewDate = todayStr();
+  render();
+
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>

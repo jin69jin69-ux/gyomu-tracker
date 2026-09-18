@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="業務遂行">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
 
@@ -129,15 +130,108 @@
 </head>
 <body>
 <div class="app">
-  <div class="eyebrow"><span id="eyebrowText">WORK TRACKER</span><span class="link" id="homeLink" style="display:none;">← 今日</span></div>
+  <div class="eyebrow"><span id="eyebrowText">WORK TRACKER</span><span><span class="link" id="homeLink" style="display:none;">← 今日</span> <span class="link" id="logoutLink" style="display:none; margin-left:10px;">ログアウト</span></span></div>
   <h1 id="mainTitle">業務遂行トラッカー</h1>
   <p class="sub" id="mainSub">今日やる業務を登録して、終わったらチェック。月間でも進み具合を確認できます。</p>
   <div id="wizard"></div>
 </div>
 
 <script>
-  function lsGet(key){ try{ const v = localStorage.getItem(key); return v===null?null:JSON.parse(v); }catch(e){ return null; } }
-  function lsSet(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+  // --- Supabase setup ---
+  const SUPABASE_URL = 'https://ckwdrankmsncajtvpddr.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_wfJtslqSh3pHYWpUI0DPwQ_bEM8JOzA';
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  let currentUserId = null;
+
+  // In-memory cache mirroring the Supabase tables, keyed the same way the old
+  // localStorage keys were. All existing render/click-handler code reads and
+  // writes through loadTasks/saveTasks/etc. exactly as before — only these
+  // low-level functions changed, so the rest of the app is untouched.
+  let cache = {};       // { 'tasks-2026-09-16': [...], 'month-tasks-2026-09': [...] }
+  let schedCache = {};  // { '2026-09-16': { deadline, busyBlocks } }
+
+  function tasksKey(dateStr){ return 'tasks-' + dateStr; }
+  function loadTasks(dateStr){ return loadTasksByKey(tasksKey(dateStr)); }
+  function saveTasks(dateStr, tasks){ saveTasksByKey(tasksKey(dateStr), tasks); }
+  function monthTasksKey(year, month){ return 'month-tasks-' + year + '-' + String(month+1).padStart(2,'0'); }
+  function loadMonthTasks(year, month){ return loadTasksByKey(monthTasksKey(year, month)); }
+  function saveMonthTasks(year, month, tasks){ saveTasksByKey(monthTasksKey(year, month), tasks); }
+
+  function loadTasksByKey(key){ return cache[key] || []; }
+  function saveTasksByKey(key, newList){
+    const oldList = cache[key] || [];
+    diffAndSync(key, oldList, newList);
+    cache[key] = newList;
+  }
+
+  function schedKey(dateStr){ return 'sched-' + dateStr; }
+  function loadSchedSettings(dateStr){ return schedCache[dateStr] || { deadline:'', busyBlocks:[] }; }
+  function saveSchedSettings(dateStr, settings){
+    schedCache[dateStr] = settings;
+    if(!currentUserId) return;
+    sb.from('sched_settings')
+      .upsert({ user_id: currentUserId, date: dateStr, deadline: settings.deadline || '', busy_blocks: settings.busyBlocks || [] }, { onConflict: 'user_id,date' })
+      .then(({error})=>{ if(error) console.error('sched sync', error); });
+  }
+
+  function keyToTableInfo(key){
+    if(key.startsWith('month-tasks-')){
+      const [y, m] = key.slice('month-tasks-'.length).split('-').map(Number);
+      return { table: 'month_tasks', extra: { year: y, month: m } };
+    }
+    if(key.startsWith('tasks-')){
+      return { table: 'tasks', extra: { date: key.slice('tasks-'.length) } };
+    }
+    return null;
+  }
+  function buildRow(table, extra, item){
+    if(table === 'tasks'){
+      return { id:item.id, user_id:currentUserId, date:extra.date, name:item.name, min:item.min, time:item.time||'', deadline:item.deadline||null, done:!!item.done };
+    }
+    return { id:item.id, user_id:currentUserId, year:extra.year, month:extra.month, name:item.name, min:item.min, deadline:item.deadline||null, done:!!item.done };
+  }
+  function diffAndSync(key, oldList, newList){
+    const info = keyToTableInfo(key);
+    if(!info || !currentUserId) return;
+    const oldById = new Map(oldList.map(t=>[String(t.id), t]));
+    const newIds = new Set(newList.map(t=>String(t.id)));
+    oldById.forEach((_, id)=>{
+      if(!newIds.has(id)){
+        sb.from(info.table).delete().eq('id', id).then(({error})=>{ if(error) console.error('delete', error); });
+      }
+    });
+    newList.forEach(t=>{
+      const old = oldById.get(String(t.id));
+      const row = buildRow(info.table, info.extra, t);
+      if(!old){
+        sb.from(info.table).insert(row).then(({error})=>{ if(error) console.error('insert', error); });
+      } else if(old.name!==t.name || old.min!==t.min || old.time!==t.time || old.deadline!==t.deadline || !!old.done!==!!t.done){
+        sb.from(info.table).update(row).eq('id', t.id).then(({error})=>{ if(error) console.error('update', error); });
+      }
+    });
+  }
+
+  async function loadAllFromSupabase(){
+    cache = {}; schedCache = {};
+    const [{ data: taskRows }, { data: monthRows }, { data: schedRows }] = await Promise.all([
+      sb.from('tasks').select('*'),
+      sb.from('month_tasks').select('*'),
+      sb.from('sched_settings').select('*'),
+    ]);
+    (taskRows||[]).forEach(r=>{
+      const key = tasksKey(r.date);
+      if(!cache[key]) cache[key] = [];
+      cache[key].push({ id:r.id, name:r.name, min:r.min, time:r.time||'', deadline:r.deadline||'', done:r.done });
+    });
+    (monthRows||[]).forEach(r=>{
+      const key = monthTasksKey(r.year, r.month - 1);
+      if(!cache[key]) cache[key] = [];
+      cache[key].push({ id:r.id, name:r.name, min:r.min, deadline:r.deadline||'', done:r.done });
+    });
+    (schedRows||[]).forEach(r=>{
+      schedCache[r.date] = { deadline:r.deadline||'', busyBlocks:r.busy_blocks||[] };
+    });
+  }
 
   const state = {
     screen: 'today',
@@ -155,6 +249,8 @@
     monthSchedMinPerDay: 60,
     monthSchedSkipWeekends: true,
     monthSchedResult: null,
+    authMode: 'login',   // 'login' | 'signup'
+    authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
   };
 
   function todayStr(){
@@ -166,17 +262,6 @@
     const dow = ['日','月','火','水','木','金','土'][new Date(y,m-1,d).getDay()];
     return `${m}月${d}日(${dow})`;
   }
-  function tasksKey(dateStr){ return 'tasks-' + dateStr; }
-  function loadTasks(dateStr){ return lsGet(tasksKey(dateStr)) || []; }
-  function saveTasks(dateStr, tasks){ lsSet(tasksKey(dateStr), tasks); }
-  function monthTasksKey(year, month){ return 'month-tasks-' + year + '-' + String(month+1).padStart(2,'0'); }
-  function loadMonthTasks(year, month){ return lsGet(monthTasksKey(year, month)) || []; }
-  function saveMonthTasks(year, month, tasks){ lsSet(monthTasksKey(year, month), tasks); }
-  function loadTasksByKey(key){ return lsGet(key) || []; }
-  function saveTasksByKey(key, tasks){ lsSet(key, tasks); }
-  function schedKey(dateStr){ return 'sched-' + dateStr; }
-  function loadSchedSettings(dateStr){ return lsGet(schedKey(dateStr)) || { deadline:'', busyBlocks:[] }; }
-  function saveSchedSettings(dateStr, settings){ lsSet(schedKey(dateStr), settings); }
   function toMin(hhmm){ const [h,m] = hhmm.split(':').map(Number); return h*60+m; }
   function toHHMM(min){
     min = Math.max(0, Math.round(min));
@@ -187,10 +272,18 @@
   const wizard = document.getElementById('wizard');
   const eyebrowText = document.getElementById('eyebrowText');
   const homeLink = document.getElementById('homeLink');
+  const logoutLink = document.getElementById('logoutLink');
   const mainTitle = document.getElementById('mainTitle');
   const mainSub = document.getElementById('mainSub');
 
   homeLink.addEventListener('click', ()=>{ state.screen='today'; state.viewDate=todayStr(); render(); });
+  logoutLink.addEventListener('click', async ()=>{
+    await sb.auth.signOut();
+    currentUserId = null;
+    cache = {}; schedCache = {};
+    state.screen = 'auth';
+    render();
+  });
 
   function render(){
     if(!state.viewDate) state.viewDate = todayStr();
@@ -199,9 +292,15 @@
       state.monthCursor = { year: d.getFullYear(), month: d.getMonth() };
     }
     const s = state.screen;
-    homeLink.style.display = (s === 'today') ? 'none' : 'inline';
+    homeLink.style.display = (s === 'today' || s === 'auth') ? 'none' : 'inline';
+    logoutLink.style.display = (s === 'auth') ? 'none' : 'inline';
 
-    if(s === 'today'){
+    if(s === 'auth'){
+      eyebrowText.textContent = 'WORK TRACKER';
+      mainTitle.textContent = 'ログイン';
+      mainSub.textContent = 'アカウントでログインすると、どの端末からでも同じ業務データを見られます。';
+      renderAuth();
+    } else if(s === 'today'){
       eyebrowText.textContent = 'WORK TRACKER';
       mainTitle.textContent = '今日の業務';
       mainSub.textContent = fmtDateLabel(state.viewDate) + ' にやる業務を管理します。';
@@ -232,6 +331,81 @@
       mainSub.textContent = '期限日と1日に使える時間から、今月の業務を各日に振り分けます。';
       renderMonthSchedule();
     }
+  }
+
+  // --- Auth: login / signup ---
+  const AUTH_DOMAIN = '@gyomu-tracker.local';
+  function usernameToEmail(username){ return username.trim().toLowerCase() + AUTH_DOMAIN; }
+  function validUsername(username){ return /^[a-zA-Z0-9_]{3,20}$/.test(username.trim()); }
+
+  function renderAuth(){
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="bet-type-tabs" style="display:flex; gap:8px; margin-bottom:16px;">
+          <button id="tabLogin" class="btn ${state.authMode==='login' ? 'btn-primary' : 'btn-ghost'}">ログイン</button>
+          <button id="tabSignup" class="btn ${state.authMode==='signup' ? 'btn-primary' : 'btn-ghost'}">新規登録</button>
+        </div>
+        <div class="field">
+          <label class="field-label">ユーザー名</label>
+          <input type="text" id="authUsername" value="${state.authEmail}" placeholder="例：taro" autocapitalize="off" autocorrect="off">
+          <div class="q-hint" style="font-size:11px; margin-top:6px;">半角英数字と_のみ、3〜20文字。メールアドレスは不要です。</div>
+        </div>
+        <div class="field">
+          <label class="field-label">パスワード</label>
+          <input type="password" id="authPassword" value="${state.authPassword}" placeholder="6文字以上">
+        </div>
+        ${state.authError ? `<div class="sched-unfit">${state.authError}</div>` : ''}
+        ${state.authNotice ? `<div class="sched-busy-note" style="color:var(--amber);">${state.authNotice}</div>` : ''}
+        <div class="btn-row">
+          <button class="btn btn-primary" id="authSubmit" ${state.authBusy ? 'disabled' : ''}>${state.authBusy ? '処理中…' : (state.authMode==='login' ? 'ログイン' : 'アカウント作成')}</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('tabLogin').addEventListener('click', ()=>{ state.authMode='login'; state.authError=''; render(); });
+    document.getElementById('tabSignup').addEventListener('click', ()=>{ state.authMode='signup'; state.authError=''; render(); });
+    document.getElementById('authUsername').addEventListener('input', (e)=>{ state.authEmail = e.target.value; });
+    document.getElementById('authPassword').addEventListener('input', (e)=>{ state.authPassword = e.target.value; });
+    document.getElementById('authSubmit').addEventListener('click', async ()=>{
+      state.authError = ''; state.authNotice = '';
+      const username = state.authEmail.trim();
+      if(!username || !state.authPassword){ state.authError = 'ユーザー名とパスワードを入力してください。'; render(); return; }
+      if(!validUsername(username)){ state.authError = 'ユーザー名は半角英数字と_のみ、3〜20文字で入力してください。'; render(); return; }
+      const syntheticEmail = usernameToEmail(username);
+      state.authBusy = true; render();
+      try{
+        if(state.authMode === 'signup'){
+          const { data, error } = await sb.auth.signUp({
+            email: syntheticEmail,
+            password: state.authPassword,
+            options: { data: { username } },
+          });
+          if(error) throw error;
+          if(!data.session){
+            state.authBusy = false;
+            state.authNotice = 'メール確認が有効になっているため、このままではログインできません。Supabaseの「Confirm email」をオフにしてから、もう一度登録してください。';
+            render();
+            return;
+          }
+        } else {
+          const { error } = await sb.auth.signInWithPassword({ email: syntheticEmail, password: state.authPassword });
+          if(error) throw error;
+        }
+        const { data: sessionData } = await sb.auth.getSession();
+        currentUserId = sessionData.session ? sessionData.session.user.id : null;
+        if(!currentUserId){ throw new Error('ログインに失敗しました。'); }
+        await loadAllFromSupabase();
+        state.authBusy = false;
+        state.authPassword = '';
+        state.screen = 'today';
+        state.viewDate = todayStr();
+        render();
+      } catch(err){
+        state.authBusy = false;
+        const msg = (err && err.message) ? err.message : 'エラーが発生しました。';
+        state.authError = msg.includes('already registered') ? 'そのユーザー名はすでに使われています。' : msg;
+        render();
+      }
+    });
   }
 
   // --- Today screen ---
@@ -433,7 +607,7 @@
         const t = list.find(x=>String(x.id)===state.editingTaskId);
         if(t){ t.name = state.formName.trim(); t.min = state.formMin; t.time = timeVal; t.deadline = state.formDeadline || ''; }
       } else {
-        list.push({ id: Date.now() + '-' + Math.floor(Math.random()*1000), name: state.formName.trim(), min: state.formMin, time: timeVal, deadline: state.formDeadline || '', done: false });
+        list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, time: timeVal, deadline: state.formDeadline || '', done: false });
       }
       saveTasksByKey(state.formStorageKey, list);
       state.screen = state.formReturnScreen;
@@ -785,7 +959,7 @@
       r.placed.forEach(item=>{
         const dayList = loadTasks(item.dateStr);
         const label = item.totalParts > 1 ? `${item.task.name}（${item.part}/${item.totalParts}）` : item.task.name;
-        dayList.push({ id: Date.now() + '-' + Math.floor(Math.random()*1000), name: label, min: item.min, time: '', done: false });
+        dayList.push({ id: crypto.randomUUID(), name: label, min: item.min, time: '', done: false });
         saveTasks(item.dateStr, dayList);
       });
 
@@ -980,7 +1154,24 @@
   }
 
   state.viewDate = todayStr();
-  render();
+
+  (async function start(){
+    wizard.innerHTML = `<div class="empty-note">読み込み中…</div>`;
+    try{
+      const { data: sessionData } = await sb.auth.getSession();
+      if(sessionData && sessionData.session){
+        currentUserId = sessionData.session.user.id;
+        await loadAllFromSupabase();
+        state.screen = 'today';
+      } else {
+        state.screen = 'auth';
+      }
+    } catch(err){
+      console.error('startup error', err);
+      state.screen = 'auth';
+    }
+    render();
+  })();
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     window.addEventListener('load', () => {

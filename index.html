@@ -206,7 +206,7 @@
     if(table === 'tasks'){
       return { id:item.id, user_id:currentUserId, date:extra.date, name:item.name, min:item.min, time:item.time||'', deadline:item.deadline||null, done:!!item.done };
     }
-    return { id:item.id, user_id:currentUserId, year:extra.year, month:extra.month, name:item.name, min:item.min, deadline:item.deadline||null, done:!!item.done, recurring_id:item.recurringId||null };
+    return { id:item.id, user_id:currentUserId, year:extra.year, month:extra.month, name:item.name, min:item.min, deadline:item.deadline||null, done:!!item.done, recurring_id:item.recurringId||null, scheduled:!!item.scheduled };
   }
   function diffAndSync(key, oldList, newList){
     const info = keyToTableInfo(key);
@@ -223,7 +223,7 @@
       const row = buildRow(info.table, info.extra, t);
       if(!old){
         sb.from(info.table).insert(row).then(({error})=>{ if(error) console.error('insert', error); });
-      } else if(old.name!==t.name || old.min!==t.min || old.time!==t.time || old.deadline!==t.deadline || !!old.done!==!!t.done){
+      } else if(old.name!==t.name || old.min!==t.min || old.time!==t.time || old.deadline!==t.deadline || !!old.done!==!!t.done || !!old.scheduled!==!!t.scheduled){
         sb.from(info.table).update(row).eq('id', t.id).then(({error})=>{ if(error) console.error('update', error); });
       }
     });
@@ -245,7 +245,7 @@
     (monthRows||[]).forEach(r=>{
       const key = monthTasksKey(r.year, r.month - 1);
       if(!cache[key]) cache[key] = [];
-      cache[key].push({ id:r.id, name:r.name, min:r.min, deadline:r.deadline||'', done:r.done, recurringId:r.recurring_id||null });
+      cache[key].push({ id:r.id, name:r.name, min:r.min, deadline:r.deadline||'', done:r.done, recurringId:r.recurring_id||null, scheduled:!!r.scheduled });
     });
     (schedRows||[]).forEach(r=>{
       schedCache[r.date] = { deadline:r.deadline||'', busyBlocks:r.busy_blocks||[] };
@@ -257,7 +257,10 @@
     const { data, error } = await sb.from('recurring_month_tasks')
       .insert({ user_id: currentUserId, name, min, deadline_day: deadlineDay })
       .select().single();
-    if(error){ console.error('createRecurringTemplate', error); return null; }
+    if(error){
+      console.error('createRecurringTemplate', error);
+      throw new Error('毎月繰り返す設定の保存に失敗しました: ' + (error.message || JSON.stringify(error)));
+    }
     if(!state.recurringTemplates) state.recurringTemplates = [];
     state.recurringTemplates.push(data);
     return data.id;
@@ -273,12 +276,14 @@
   // Make sure every recurring template has an instance in the given month
   // (creates any that are missing, e.g. when browsing into a new month for the first time).
   async function ensureRecurringTasksForMonth(year, month){
+    state.recurringSyncError = '';
     if(!state.recurringTemplates || !state.recurringTemplates.length) return false;
     const key = monthTasksKey(year, month);
     const existing = cache[key] || [];
     const existingRecurIds = new Set(existing.map(t => t.recurringId).filter(Boolean));
     const missing = state.recurringTemplates.filter(t => !existingRecurIds.has(t.id));
     if(!missing.length) return false;
+    if(!currentUserId){ state.recurringSyncError = 'ログイン情報が見つかりませんでした（currentUserId未設定）。'; return false; }
     const numDays = daysInMonth(year, month);
     const newRows = missing.map(t => ({
       id: crypto.randomUUID(),
@@ -290,7 +295,11 @@
       recurring_id: t.id,
     }));
     const { error } = await sb.from('month_tasks').insert(newRows);
-    if(error){ console.error('ensureRecurringTasksForMonth', error); return false; }
+    if(error){
+      console.error('ensureRecurringTasksForMonth', error);
+      state.recurringSyncError = '毎月の業務の自動追加でエラー: ' + (error.message || JSON.stringify(error));
+      return false;
+    }
     const mapped = newRows.map(r => ({ id:r.id, name:r.name, min:r.min, deadline:r.deadline||'', done:false, recurringId:r.recurring_id }));
     cache[key] = [...existing, ...mapped];
     return true;
@@ -302,8 +311,9 @@
     editingTaskId: null,  // when set, add-task screen is in edit mode
     monthCursor: null,    // {year, month} 0-indexed month
     formName: '', formMin: 30, formTimeOn: false, formTime: '', formDeadline: '',
-    formRecurring: false, formDeadlineDay: '',
+    formRecurring: false, formDeadlineDay: '', formError: '',
     recurringTemplates: null,
+    recurringSyncError: '',
     formScope: 'day',        // 'day' | 'month' — which kind of task list the form is editing
     formStorageKey: null,    // localStorage key the form saves to
     formReturnScreen: 'today', // screen to go back to after save/cancel/delete
@@ -703,7 +713,7 @@
     const addBtn = document.getElementById('addTaskBtn');
     if(addBtn) addBtn.addEventListener('click', ()=>{
       state.editingTaskId = null;
-      state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = '';
+      state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = ''; state.formRecurring = false; state.formDeadlineDay = ''; state.formError = '';
       state.formScope = opts.scope;
       state.formStorageKey = opts.storageKey;
       state.formReturnScreen = opts.returnScreen;
@@ -774,6 +784,7 @@
             </div>
           ` : `<div class="q-hint" style="font-size:11.5px; margin-bottom:6px;">来月以降、月が変わるたびに自動でこの業務が追加されます。</div>`}
         ` : ''}
+        ${state.formError ? `<div class="sched-unfit">${state.formError}</div>` : ''}
         <div class="btn-row">
           <button class="btn btn-ghost" id="cancelBtn">キャンセル</button>
           <button class="btn btn-primary" id="saveBtn" ${state.formName.trim() ? '' : 'disabled'}>保存する</button>
@@ -830,12 +841,19 @@
         saveTasksByKey(state.formStorageKey, list);
       } else if(state.formScope === 'month' && state.formRecurring){
         saveBtn.disabled = true; saveBtn.textContent = '保存中…';
-        const dayNum = state.formDeadlineDay ? Number(state.formDeadlineDay) : null;
-        const templateId = await createRecurringTemplate(state.formName.trim(), state.formMin, dayNum);
-        const { year, month } = state.monthCursor;
-        const deadline = dayNum ? monthDateStr(year, month, Math.min(dayNum, daysInMonth(year, month))) : '';
-        list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, deadline, done: false, recurringId: templateId });
-        saveTasksByKey(state.formStorageKey, list);
+        try{
+          const dayNum = state.formDeadlineDay ? Number(state.formDeadlineDay) : null;
+          const templateId = await createRecurringTemplate(state.formName.trim(), state.formMin, dayNum);
+          const { year, month } = state.monthCursor;
+          const deadline = dayNum ? monthDateStr(year, month, Math.min(dayNum, daysInMonth(year, month))) : '';
+          list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, deadline, done: false, recurringId: templateId });
+          saveTasksByKey(state.formStorageKey, list);
+        } catch(err){
+          saveBtn.disabled = false; saveBtn.textContent = '保存する';
+          state.formError = (err && err.message) ? err.message : '保存に失敗しました。';
+          render();
+          return;
+        }
       } else {
         list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, time: timeVal, deadline: state.formDeadline || '', done: false });
         saveTasksByKey(state.formStorageKey, list);
@@ -1037,7 +1055,7 @@
 
   // --- Monthly schedule builder: fit "this month" tasks onto specific days ---
   function computeMonthSchedule(year, month, deadlineDateStr, minPerDay, skipWeekends){
-    const monthTasks = loadMonthTasks(year, month).filter(t => !t.done);
+    const monthTasks = loadMonthTasks(year, month).filter(t => !t.done && !t.scheduled);
     const todayD = todayStr();
     const numDays = daysInMonth(year, month);
 
@@ -1090,8 +1108,20 @@
   }
 
   // --- Recurring monthly task templates ---
-  function renderRecurringManage(){
-    const templates = state.recurringTemplates || [];
+  async function renderRecurringManage(){
+    wizard.innerHTML = `<div class="empty-note">読み込み中…</div>`;
+    const { data, error } = await sb.from('recurring_month_tasks').select('*').order('name');
+    if(state.screen !== 'recurring-manage') return; // navigated away while loading
+    if(error){
+      wizard.innerHTML = `
+        <div class="sched-unfit">一覧の取得に失敗しました: ${error.message || JSON.stringify(error)}</div>
+        <div class="btn-row"><button class="btn btn-ghost" id="backToMonth">月間ビューに戻る</button></div>
+      `;
+      document.getElementById('backToMonth').addEventListener('click', ()=>{ state.screen='month'; render(); });
+      return;
+    }
+    const templates = data || [];
+    state.recurringTemplates = templates; // keep the shared cache in sync with what's actually in the DB
     const rowsHtml = templates.length ? templates.map(t=>`
       <div class="friend-row">
         <div class="name">${t.name}<span style="color:var(--ink-soft); font-size:11px;"> ・${t.min}分${t.deadline_day ? ' ・毎月' + t.deadline_day + '日が期限' : ''}</span></div>
@@ -1225,14 +1255,15 @@
         scheduledByTaskId[key] = (scheduledByTaskId[key] || 0) + item.min;
       });
 
-      // fully-scheduled tasks are removed; partially-scheduled tasks shrink to their remaining minutes
+      // fully-scheduled tasks stay in the list (flagged so they aren't re-scheduled next time);
+      // partially-scheduled tasks shrink to just their remaining, still-unscheduled minutes
       const updatedMonthList = [];
       monthList.forEach(t=>{
         const scheduled = scheduledByTaskId[String(t.id)] || 0;
         if(scheduled <= 0){ updatedMonthList.push(t); return; }
         const remaining = t.min - scheduled;
         if(remaining > 0){ updatedMonthList.push({ ...t, min: remaining }); }
-        // if remaining <= 0, the task was fully scheduled — drop it from the month list
+        else{ updatedMonthList.push({ ...t, scheduled: true }); }
       });
       saveMonthTasks(year, month, updatedMonthList);
 
@@ -1260,11 +1291,13 @@
 
     let totalTasks = 0, totalDone = 0, daysWithTasks = 0, daysAllDone = 0;
     const dayStats = [];
+    const dayTasksThisMonth = [];
     for(let d=1; d<=numDays; d++){
       const ds = monthDateStr(year, month, d);
       const tasks = loadTasks(ds);
       const done = tasks.filter(t=>t.done).length;
       dayStats.push({ day:d, dateStr:ds, total:tasks.length, done });
+      tasks.forEach(t=> dayTasksThisMonth.push({ ...t, dateStr: ds }));
       if(tasks.length){
         daysWithTasks++;
         totalTasks += tasks.length;
@@ -1284,7 +1317,7 @@
         <button class="task-check ${t.done?'done':''}" data-mid="${t.id}">${t.done?'✓':''}</button>
         <div class="task-body">
           <div class="task-name">${t.name}</div>
-          <div class="task-meta"><span class="task-badge">${t.min}分</span>${t.deadline ? `<span class="task-badge">期限:${fmtDateLabel(t.deadline)}</span>` : ''}${t.recurringId ? `<span class="task-badge">🔁 毎月</span>` : ''}</div>
+          <div class="task-meta"><span class="task-badge">${t.min}分</span>${t.deadline ? `<span class="task-badge">期限:${fmtDateLabel(t.deadline)}</span>` : ''}${t.recurringId ? `<span class="task-badge">🔁 毎月</span>` : ''}${t.scheduled ? `<span class="task-badge">📅 配分済み</span>` : ''}</div>
         </div>
         <div class="task-actions">
           <button data-medit="${t.id}">編集</button>
@@ -1292,6 +1325,17 @@
         </div>
       </div>
     `).join('') : `<div class="empty-note">今月中にやる業務はまだ登録されていません。</div>`;
+
+    const sortedDayTasks = [...dayTasksThisMonth].sort((a,b)=> a.dateStr < b.dateStr ? -1 : a.dateStr > b.dateStr ? 1 : 0);
+    const dayTaskRowsHtml = sortedDayTasks.length ? sortedDayTasks.map(t=>`
+      <div class="task-row ${t.done?'done':''}" data-jumpdate="${t.dateStr}" style="cursor:pointer;">
+        <div style="width:26px; flex:0 0 auto; text-align:center; margin-top:2px; font-size:11px; color:${t.done?'var(--teal)':'var(--ink-soft)'};">${t.done?'✓':'○'}</div>
+        <div class="task-body">
+          <div class="task-name">${t.name}</div>
+          <div class="task-meta"><span class="task-badge">${fmtDateLabel(t.dateStr)}</span><span class="task-badge">${t.min}分</span></div>
+        </div>
+      </div>
+    `).join('') : `<div class="empty-note">今月、日付を指定して登録された業務はありません。</div>`;
 
     const dowLabels = ['日','月','火','水','木','金','土'].map(d=>`<div class="month-dow">${d}</div>`).join('');
     const blanks = Array.from({length:firstDow}).map(()=>`<div class="month-cell empty"></div>`).join('');
@@ -1310,6 +1354,7 @@
     }).join('');
 
     wizard.innerHTML = `
+      ${state.recurringSyncError ? `<div class="sched-unfit">${state.recurringSyncError}</div>` : ''}
       <div class="month-nav">
         <button id="prevMonth">◀</button>
         <div class="label">${year}年${month+1}月</div>
@@ -1328,6 +1373,10 @@
         <button class="nav-btn" id="goMonthSchedule" style="flex:none; width:100%;"><span class="nav-icon">🗓️</span>今月のスケジュールを組む</button>
       </div>
       <button class="friend-link" id="goRecurringManage">🔁 毎月の業務を管理</button>
+
+      <div class="q-label" style="margin-top:26px; margin-bottom:6px;">日付を指定して登録された今月の業務</div>
+      <div class="q-hint" style="margin-bottom:12px;">「今日の業務」から登録した、今月の各日の業務です。タップするとその日に移動します。</div>
+      <div class="card">${dayTaskRowsHtml}</div>
 
       <div class="card" style="margin-top:18px;">
         <div class="month-stats">
@@ -1374,7 +1423,7 @@
     });
     document.getElementById('addMonthTaskBtn').addEventListener('click', ()=>{
       state.editingTaskId = null;
-      state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = '';
+      state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = ''; state.formRecurring = false; state.formDeadlineDay = ''; state.formError = '';
       state.formScope = 'month';
       state.formStorageKey = monthTaskKey;
       state.formReturnScreen = 'month';
@@ -1393,6 +1442,13 @@
     document.getElementById('goRecurringManage').addEventListener('click', ()=>{
       state.screen = 'recurring-manage';
       render();
+    });
+    wizard.querySelectorAll('[data-jumpdate]').forEach(row=>{
+      row.addEventListener('click', ()=>{
+        state.viewDate = row.dataset.jumpdate;
+        state.screen = 'day-detail';
+        render();
+      });
     });
     document.getElementById('prevMonth').addEventListener('click', ()=>{
       let { year, month } = state.monthCursor;

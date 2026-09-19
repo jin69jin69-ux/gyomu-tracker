@@ -364,6 +364,7 @@
     monthSchedSkipWeekends: true,
     monthSchedExcludeDays: [],
     bulkResetNotice: '', bulkResetError: '',
+    bulkRangeStart: '', bulkRangeEnd: '',
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
@@ -431,6 +432,7 @@
     lsSet('current-user-id', null);
     lsSet('current-username', null);
     cache = {}; schedCache = {};
+    state.recurringCheckedMonths = null;
     state.screen = 'auth';
     render();
   });
@@ -516,6 +518,26 @@
     return error;
   }
 
+  async function bulkDeleteMonthTasksInRange(startYm, endYm){
+    const { data, error } = await sb.from('month_tasks').select('id, year, month').eq('user_id', currentUserId);
+    if(error) return { error, count: 0 };
+    const matchIds = (data || []).filter(r=>{
+      const ym = r.year + '-' + String(r.month).padStart(2,'0');
+      if(startYm && ym < startYm) return false;
+      if(endYm && ym > endYm) return false;
+      return true;
+    }).map(r=>r.id);
+    if(!matchIds.length) return { error: null, count: 0 };
+    const { error: delErr } = await sb.from('month_tasks').delete().in('id', matchIds);
+    if(delErr) return { error: delErr, count: 0 };
+    // drop the matching entries from the local cache too
+    Object.keys(cache).forEach(key=>{
+      if(!key.startsWith('month-tasks-')) return;
+      cache[key] = (cache[key] || []).filter(t => !matchIds.includes(t.id));
+    });
+    return { error: null, count: matchIds.length };
+  }
+
   function renderBulkReset(){
     const dayCount = countCacheByPrefix('tasks-');
     const monthCount = countCacheByPrefix('month-tasks-');
@@ -537,11 +559,37 @@
         <div class="q-hint" style="margin-bottom:10px;">現在 ${recurCount} 件登録されています。重複して作られてしまった場合は、ここでまとめて削除できます。</div>
         <button class="btn btn-ghost" id="resetRecurring" style="width:100%; color:var(--danger); border-color:var(--danger);">毎月繰り返す設定を全部削除</button>
       </div>
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:4px;">指定した期間の月間業務を削除</div>
+        <div class="q-hint" style="margin-bottom:10px;">無期限の毎月繰り返す設定などが原因で、特定の期間にだけ不要な業務が溜まってしまった場合に使えます（テンプレート自体は消えません。生成済みの業務だけを削除します）。</div>
+        <div class="field">
+          <label class="field-label">開始月</label>
+          <input type="month" id="bulkRangeStartInput" value="${state.bulkRangeStart}">
+        </div>
+        <div class="field">
+          <label class="field-label">終了月</label>
+          <input type="month" id="bulkRangeEndInput" value="${state.bulkRangeEnd}">
+        </div>
+        <button class="btn btn-ghost" id="resetRangeTasks" style="width:100%; color:var(--danger); border-color:var(--danger);">この期間の月間業務を削除</button>
+      </div>
       ${state.bulkResetNotice ? `<div class="sched-busy-note" style="color:var(--teal);">${state.bulkResetNotice}</div>` : ''}
       ${state.bulkResetError ? `<div class="sched-unfit">${state.bulkResetError}</div>` : ''}
       <div class="btn-row"><button class="btn btn-ghost" id="backFromReset">今日の業務に戻る</button></div>
     `;
 
+    document.getElementById('bulkRangeStartInput').addEventListener('input', (e)=>{ state.bulkRangeStart = e.target.value; });
+    document.getElementById('bulkRangeEndInput').addEventListener('input', (e)=>{ state.bulkRangeEnd = e.target.value; });
+    document.getElementById('resetRangeTasks').addEventListener('click', async ()=>{
+      if(!state.bulkRangeStart && !state.bulkRangeEnd){ state.bulkResetError = '開始月か終了月のどちらかは入力してください。'; render(); return; }
+      const label = `${state.bulkRangeStart || '(指定なし)'} 〜 ${state.bulkRangeEnd || '(指定なし)'}`;
+      if(!confirm(`本当に、${label} の月間業務をまとめて削除しますか？この操作は元に戻せません。`)) return;
+      state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
+      render();
+      const { error, count } = await bulkDeleteMonthTasksInRange(state.bulkRangeStart, state.bulkRangeEnd);
+      if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
+      state.bulkResetNotice = `${label} の月間業務を ${count} 件削除しました。`;
+      render();
+    });
     document.getElementById('resetDayTasks').addEventListener('click', async ()=>{
       if(!confirm(`本当に、日付ごとの業務を全部（${dayCount}件）削除しますか？この操作は元に戻せません。`)) return;
       state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
@@ -649,6 +697,7 @@
         currentUserId = userId;
         lsSet('current-user-id', userId);
         lsSet('current-username', username);
+        state.recurringCheckedMonths = null;
         await loadAllFromSupabase();
         state.authBusy = false;
         state.authPassword = '';
@@ -1444,9 +1493,14 @@
 
   function renderMonth(){
     const { year, month } = state.monthCursor;
-    ensureRecurringTasksForMonth(year, month).then(created=>{
-      if(created && state.screen === 'month') render();
-    });
+    const ym = year + '-' + String(month+1).padStart(2,'0');
+    if(!state.recurringCheckedMonths) state.recurringCheckedMonths = new Set();
+    if(!state.recurringCheckedMonths.has(ym)){
+      state.recurringCheckedMonths.add(ym);
+      ensureRecurringTasksForMonth(year, month).then(changed=>{
+        if(changed && state.screen === 'month' && state.monthCursor.year === year && state.monthCursor.month === month) render();
+      });
+    }
     const numDays = daysInMonth(year, month);
     const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
     const today = todayStr();

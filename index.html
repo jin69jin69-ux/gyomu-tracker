@@ -49,6 +49,16 @@
     background:var(--input-bg); color:var(--ink-soft); border:1px solid var(--line);
   }
   .task-actions{ display:flex; gap:6px; flex:0 0 auto; }
+  .friend-row{
+    display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;
+    padding:12px 0; border-bottom:1px solid var(--line);
+  }
+  .friend-row:last-child{ border-bottom:none; }
+  .friend-row .name{ font-size:13.5px; flex:1 1 auto; min-width:0; }
+  .friend-row button{
+    font-family:'Zen Kaku Gothic New', sans-serif; font-size:12px; padding:6px 10px; border-radius:8px;
+    border:1px solid var(--line); background:var(--input-bg); color:var(--ink-soft); cursor:pointer; flex:0 0 auto;
+  }
   .task-actions button{ border:none; background:none; color:var(--ink-soft); font-size:12px; cursor:pointer; padding:4px; }
   .empty-note{ font-size:12.5px; color:var(--ink-soft); text-align:center; padding:18px 0; }
 
@@ -368,7 +378,7 @@
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
-    adminPassword: '', adminError: '', adminUsers: null, adminNotice: '',
+    adminPassword: '', adminError: '', adminUsers: null, adminNotice: '', adminError2: '',
   };
 
   function todayStr(){
@@ -551,8 +561,8 @@
       </div>
       <div class="card">
         <div class="q-label" style="font-weight:900; margin-bottom:4px;">今月中にやる業務（月間プール）</div>
-        <div class="q-hint" style="margin-bottom:10px;">現在 ${monthCount} 件登録されています。</div>
-        <button class="btn btn-ghost" id="resetMonthTasks" style="width:100%; color:var(--danger); border-color:var(--danger);">今月の業務を全部削除</button>
+        <div class="q-hint" style="margin-bottom:10px;">現在 ${monthCount} 件登録されています。あわせて「毎月繰り返す設定」（${recurCount}件）も削除されます（消さないと、また自動で復活してしまうため）。</div>
+        <button class="btn btn-ghost" id="resetMonthTasks" style="width:100%; color:var(--danger); border-color:var(--danger);">今月の業務と繰り返し設定を全部削除</button>
       </div>
       <div class="card">
         <div class="q-label" style="font-weight:900; margin-bottom:4px;">毎月繰り返す設定（テンプレート）</div>
@@ -601,13 +611,16 @@
       render();
     });
     document.getElementById('resetMonthTasks').addEventListener('click', async ()=>{
-      if(!confirm(`本当に、今月の業務を全部（${monthCount}件）削除しますか？この操作は元に戻せません。`)) return;
+      if(!confirm(`本当に、今月の業務を全部（${monthCount}件）と、毎月繰り返す設定を全部（${recurCount}件）削除しますか？この操作は元に戻せません。`)) return;
       state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
       render();
-      const error = await bulkDeleteTable('month_tasks');
-      if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
+      const error1 = await bulkDeleteTable('month_tasks');
+      if(error1){ state.bulkResetError = '削除に失敗しました: ' + (error1.message || JSON.stringify(error1)); state.bulkResetNotice = ''; render(); return; }
+      const error2 = await bulkDeleteTable('recurring_month_tasks');
+      if(error2){ state.bulkResetError = '削除に失敗しました: ' + (error2.message || JSON.stringify(error2)); state.bulkResetNotice = ''; render(); return; }
       Object.keys(cache).forEach(k=>{ if(k.startsWith('month-tasks-')) delete cache[k]; });
-      state.bulkResetNotice = '今月の業務を全部削除しました。';
+      state.recurringTemplates = [];
+      state.bulkResetNotice = '今月の業務と、毎月繰り返す設定を全部削除しました。';
       render();
     });
     document.getElementById('resetRecurring').addEventListener('click', async ()=>{
@@ -745,16 +758,18 @@
       ? state.adminUsers.map(u => `
           <div class="friend-row">
             <div class="name">${u.username}</div>
-            <button data-resetid="${u.id}" data-resetname="${u.username}">リセット</button>
+            <button data-resetid="${u.id}" data-resetname="${u.username}">パスワードリセット</button>
+            <button data-wipeid="${u.id}" data-wipename="${u.username}" style="color:var(--danger);">アカウントリセット</button>
           </div>
         `).join('')
       : `<div class="empty-note">登録されているユーザーがいません。</div>`;
     wizard.innerHTML = `
       <div class="card">
         <div class="q-label">🔑 管理者メニュー</div>
-        <div class="q-hint" style="margin-bottom:14px;">登録されているユーザー一覧です。「リセット」を押すと、そのユーザーのパスワードを初期値（<b>${DEFAULT_RESET_PASSWORD}</b>）に戻します。リセット後、本人に伝えてログインし直してもらってください。</div>
+        <div class="q-hint" style="margin-bottom:14px;">登録されているユーザー一覧です。「パスワードリセット」はパスワードのみを初期値（<b>${DEFAULT_RESET_PASSWORD}</b>）に戻します。「アカウントリセット」は、そのユーザーの業務・月間業務・繰り返し設定・スケジュール設定を全部消去します（ログイン自体はそのまま残ります）。</div>
         ${rowsHtml}
         ${state.adminNotice ? `<div class="sched-busy-note" style="color:var(--teal); margin-top:10px;">${state.adminNotice}</div>` : ''}
+        ${state.adminError2 ? `<div class="sched-unfit">${state.adminError2}</div>` : ''}
       </div>
       <div class="btn-row"><button class="btn btn-ghost" id="adminExit">閉じる</button></div>
     `;
@@ -767,6 +782,25 @@
         state.adminNotice = error
           ? 'リセットに失敗しました。'
           : `${name} さんのパスワードを「${DEFAULT_RESET_PASSWORD}」にリセットしました。`;
+        state.adminError2 = '';
+        render();
+      });
+    });
+    document.querySelectorAll('[data-wipeid]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const id = btn.dataset.wipeid;
+        const name = btn.dataset.wipename;
+        if(!confirm(`本当に、${name} さんの業務データ（今日の業務・今月の業務・繰り返し設定・スケジュール設定）を全部リセットしますか？ログイン情報は残りますが、この操作は元に戻せません。`)) return;
+        state.adminNotice = '削除中…'; state.adminError2 = '';
+        render();
+        const tablesToWipe = ['tasks', 'month_tasks', 'sched_settings', 'recurring_month_tasks'];
+        for(const table of tablesToWipe){
+          const { error } = await sb.from(table).delete().eq('user_id', id);
+          if(error){ state.adminNotice = ''; state.adminError2 = `${name} さんのリセットに失敗しました（${table}）: ` + (error.message || JSON.stringify(error)); render(); return; }
+        }
+        // if this admin happens to be resetting the currently-logged-in account in this browser, clear its local cache too
+        if(id === currentUserId){ cache = {}; schedCache = {}; state.recurringTemplates = []; state.recurringCheckedMonths = null; }
+        state.adminNotice = `${name} さんのアカウントデータを全部リセットしました。`;
         render();
       });
     });

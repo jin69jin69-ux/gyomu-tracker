@@ -136,7 +136,7 @@
 </head>
 <body>
 <div class="app">
-  <div class="eyebrow"><span id="eyebrowText">WORK TRACKER</span><span><span class="link" id="homeLink" style="display:none;">← 今日</span> <span class="link" id="logoutLink" style="display:none; margin-left:10px;">ログアウト</span></span></div>
+  <div class="eyebrow"><span id="eyebrowText">WORK TRACKER</span><span><span class="link" id="homeLink" style="display:none;">← 今日</span> <span class="link" id="resetDataLink" style="display:none; margin-left:10px;">🗑️ データ整理</span> <span class="link" id="logoutLink" style="display:none; margin-left:10px;">ログアウト</span></span></div>
   <h1 id="mainTitle">業務遂行トラッカー</h1>
   <p class="sub" id="mainSub">今日やる業務を登録して、終わったらチェック。月間でも進み具合を確認できます。</p>
   <div id="wizard"></div>
@@ -342,6 +342,7 @@
     monthSchedMinPerDay: 60,
     monthSchedSkipWeekends: true,
     monthSchedExcludeDays: [],
+    bulkResetNotice: '', bulkResetError: '',
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
@@ -398,10 +399,12 @@
   const eyebrowText = document.getElementById('eyebrowText');
   const homeLink = document.getElementById('homeLink');
   const logoutLink = document.getElementById('logoutLink');
+  const resetDataLink = document.getElementById('resetDataLink');
   const mainTitle = document.getElementById('mainTitle');
   const mainSub = document.getElementById('mainSub');
 
   homeLink.addEventListener('click', ()=>{ state.screen='today'; state.viewDate=todayStr(); render(); });
+  resetDataLink.addEventListener('click', ()=>{ state.screen='bulk-reset'; render(); });
   logoutLink.addEventListener('click', ()=>{
     currentUserId = null;
     lsSet('current-user-id', null);
@@ -420,6 +423,7 @@
     const s = state.screen;
     homeLink.style.display = (s === 'today' || s === 'auth' || s === 'admin-gate' || s === 'admin') ? 'none' : 'inline';
     logoutLink.style.display = (s === 'auth' || s === 'admin-gate' || s === 'admin') ? 'none' : 'inline';
+    resetDataLink.style.display = (s === 'auth' || s === 'admin-gate' || s === 'admin') ? 'none' : 'inline';
 
     if(s === 'auth'){
       eyebrowText.textContent = 'WORK TRACKER';
@@ -471,7 +475,87 @@
       mainTitle.textContent = '毎月の業務を管理';
       mainSub.textContent = '毎月自動で追加される業務の一覧です。';
       renderRecurringManage();
+    } else if(s === 'bulk-reset'){
+      eyebrowText.textContent = 'WORK TRACKER · データ整理';
+      mainTitle.textContent = 'データを一括リセット';
+      mainSub.textContent = '重複や不要なデータをまとめて削除できます。元に戻せないのでご注意ください。';
+      renderBulkReset();
     }
+  }
+
+  // --- Bulk reset: clear out duplicated/unwanted data in one go ---
+  function countCacheByPrefix(prefix){
+    return Object.keys(cache)
+      .filter(k => k.startsWith(prefix))
+      .reduce((sum, k) => sum + (cache[k] || []).length, 0);
+  }
+
+  async function bulkDeleteTable(table){
+    const { error } = await sb.from(table).delete().eq('user_id', currentUserId);
+    return error;
+  }
+
+  function renderBulkReset(){
+    const dayCount = countCacheByPrefix('tasks-');
+    const monthCount = countCacheByPrefix('month-tasks-');
+    const recurCount = (state.recurringTemplates || []).length;
+
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:4px;">今日の業務（日付ごとの全業務）</div>
+        <div class="q-hint" style="margin-bottom:10px;">現在 ${dayCount} 件登録されています。全部の日付の業務がまとめて削除されます。</div>
+        <button class="btn btn-ghost" id="resetDayTasks" style="width:100%; color:var(--danger); border-color:var(--danger);">日付ごとの業務を全部削除</button>
+      </div>
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:4px;">今月中にやる業務（月間プール）</div>
+        <div class="q-hint" style="margin-bottom:10px;">現在 ${monthCount} 件登録されています。</div>
+        <button class="btn btn-ghost" id="resetMonthTasks" style="width:100%; color:var(--danger); border-color:var(--danger);">今月の業務を全部削除</button>
+      </div>
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:4px;">毎月繰り返す設定（テンプレート）</div>
+        <div class="q-hint" style="margin-bottom:10px;">現在 ${recurCount} 件登録されています。重複して作られてしまった場合は、ここでまとめて削除できます。</div>
+        <button class="btn btn-ghost" id="resetRecurring" style="width:100%; color:var(--danger); border-color:var(--danger);">毎月繰り返す設定を全部削除</button>
+      </div>
+      ${state.bulkResetNotice ? `<div class="sched-busy-note" style="color:var(--teal);">${state.bulkResetNotice}</div>` : ''}
+      ${state.bulkResetError ? `<div class="sched-unfit">${state.bulkResetError}</div>` : ''}
+      <div class="btn-row"><button class="btn btn-ghost" id="backFromReset">今日の業務に戻る</button></div>
+    `;
+
+    document.getElementById('resetDayTasks').addEventListener('click', async ()=>{
+      if(!confirm(`本当に、日付ごとの業務を全部（${dayCount}件）削除しますか？この操作は元に戻せません。`)) return;
+      state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
+      render();
+      const error = await bulkDeleteTable('tasks');
+      if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
+      Object.keys(cache).forEach(k=>{ if(k.startsWith('tasks-')) delete cache[k]; });
+      state.bulkResetNotice = '日付ごとの業務を全部削除しました。';
+      render();
+    });
+    document.getElementById('resetMonthTasks').addEventListener('click', async ()=>{
+      if(!confirm(`本当に、今月の業務を全部（${monthCount}件）削除しますか？この操作は元に戻せません。`)) return;
+      state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
+      render();
+      const error = await bulkDeleteTable('month_tasks');
+      if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
+      Object.keys(cache).forEach(k=>{ if(k.startsWith('month-tasks-')) delete cache[k]; });
+      state.bulkResetNotice = '今月の業務を全部削除しました。';
+      render();
+    });
+    document.getElementById('resetRecurring').addEventListener('click', async ()=>{
+      if(!confirm(`本当に、毎月繰り返す設定を全部（${recurCount}件）削除しますか？この操作は元に戻せません。（すでに追加済みの業務自体は残ります）`)) return;
+      state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
+      render();
+      const error = await bulkDeleteTable('recurring_month_tasks');
+      if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
+      state.recurringTemplates = [];
+      state.bulkResetNotice = '毎月繰り返す設定を全部削除しました。';
+      render();
+    });
+    document.getElementById('backFromReset').addEventListener('click', ()=>{
+      state.bulkResetNotice = ''; state.bulkResetError = '';
+      state.screen = 'today'; state.viewDate = todayStr();
+      render();
+    });
   }
 
   // --- Auth: login / signup ---

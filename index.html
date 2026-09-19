@@ -287,20 +287,41 @@
   // (creates any that are missing, e.g. when browsing into a new month for the first time).
   async function ensureRecurringTasksForMonth(year, month){
     state.recurringSyncError = '';
-    if(!state.recurringTemplates || !state.recurringTemplates.length) return false;
+    const templates = state.recurringTemplates || [];
     const ym = year + '-' + String(month+1).padStart(2,'0');
-    const inRange = state.recurringTemplates.filter(t=>{
+    const templatesById = new Map(templates.map(t=>[t.id, t]));
+    function templateInRange(t){
       if(t.start_ym && ym < t.start_ym) return false;
       if(t.end_ym && ym > t.end_ym) return false;
       return true;
-    });
-    if(!inRange.length) return false;
+    }
     const key = monthTasksKey(year, month);
-    const existing = cache[key] || [];
+    let existing = cache[key] || [];
+    let changed = false;
+
+    // Clean up unfinished instances left behind by a template that's since been deleted,
+    // or whose start/end range no longer covers this month (e.g. range narrowed after
+    // instances were already generated). Completed tasks are left alone as a record.
+    const toPrune = existing.filter(t => t.recurringId && !t.done && (!templatesById.has(t.recurringId) || !templateInRange(templatesById.get(t.recurringId))));
+    if(toPrune.length){
+      const pruneIds = new Set(toPrune.map(t=>t.id));
+      const { error: pruneErr } = await sb.from('month_tasks').delete().in('id', Array.from(pruneIds));
+      if(pruneErr){
+        console.error('ensureRecurringTasksForMonth prune', pruneErr);
+        state.recurringSyncError = '範囲外になった自動生成タスクの削除でエラー: ' + (pruneErr.message || JSON.stringify(pruneErr));
+      } else {
+        existing = existing.filter(t => !pruneIds.has(t.id));
+        cache[key] = existing;
+        changed = true;
+      }
+    }
+
+    const inRangeTemplates = templates.filter(templateInRange);
+    if(!inRangeTemplates.length) return changed;
     const existingRecurIds = new Set(existing.map(t => t.recurringId).filter(Boolean));
-    const missing = inRange.filter(t => !existingRecurIds.has(t.id));
-    if(!missing.length) return false;
-    if(!currentUserId){ state.recurringSyncError = 'ログイン情報が見つかりませんでした（currentUserId未設定）。'; return false; }
+    const missing = inRangeTemplates.filter(t => !existingRecurIds.has(t.id));
+    if(!missing.length) return changed;
+    if(!currentUserId){ state.recurringSyncError = 'ログイン情報が見つかりませんでした（currentUserId未設定）。'; return changed; }
     const numDays = daysInMonth(year, month);
     const newRows = missing.map(t => ({
       id: crypto.randomUUID(),
@@ -315,7 +336,7 @@
     if(error){
       console.error('ensureRecurringTasksForMonth', error);
       state.recurringSyncError = '毎月の業務の自動追加でエラー: ' + (error.message || JSON.stringify(error));
-      return false;
+      return changed;
     }
     const mapped = newRows.map(r => ({ id:r.id, name:r.name, min:r.min, deadline:r.deadline||'', done:false, recurringId:r.recurring_id }));
     cache[key] = [...existing, ...mapped];

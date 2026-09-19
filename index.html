@@ -126,6 +126,12 @@
   .sched-slot-name{ font-size:13.5px; flex:1; }
   .sched-unfit{ background:rgba(217,112,95,0.12); border-radius:9px; padding:12px; margin-top:10px; font-size:12.5px; color:var(--danger); }
   .sched-busy-note{ font-size:11.5px; color:var(--ink-soft); margin-top:10px; line-height:1.7; }
+
+  .deadline-alert{ background:rgba(212,175,55,0.14); border:1px solid var(--amber); border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+  .deadline-alert .title{ font-weight:900; color:var(--amber); margin-bottom:8px; font-size:13px; }
+  .deadline-alert .item{ font-size:12.5px; padding:4px 0; display:flex; justify-content:space-between; gap:10px; }
+  .deadline-alert .item .when{ font-family:'JetBrains Mono', monospace; flex:0 0 auto; }
+  .deadline-alert .item.overdue .when{ color:var(--danger); font-weight:700; }
 </style>
 </head>
 <body>
@@ -142,6 +148,18 @@
   const SUPABASE_ANON_KEY = 'sb_publishable_wfJtslqSh3pHYWpUI0DPwQ_bEM8JOzA';
   const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   let currentUserId = null;
+
+  // Small helper for plain localStorage values (login session, etc.) — separate
+  // from the Supabase-backed cache system used for task data below.
+  function lsGet(key){
+    try{
+      const v = localStorage.getItem(key);
+      return v === null ? null : JSON.parse(v);
+    }catch(e){ return null; }
+  }
+  function lsSet(key, val){
+    try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){}
+  }
 
   // In-memory cache mirroring the Supabase tables, keyed the same way the old
   // localStorage keys were. All existing render/click-handler code reads and
@@ -251,6 +269,7 @@
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
+    adminPassword: '', adminError: '', adminUsers: null, adminNotice: '',
   };
 
   function todayStr(){
@@ -261,6 +280,36 @@
     const [y,m,d] = dateStr.split('-').map(Number);
     const dow = ['日','月','火','水','木','金','土'][new Date(y,m-1,d).getDay()];
     return `${m}月${d}日(${dow})`;
+  }
+  function addDays(dateStr, n){
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const dt = new Date(y, m-1, d);
+    dt.setDate(dt.getDate() + n);
+    return dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
+  }
+  function getUpcomingDeadlineTasks(){
+    const today = todayStr();
+    const threshold = addDays(today, 3);
+    const results = [];
+    Object.keys(cache).forEach(key=>{
+      const tasks = cache[key] || [];
+      if(key.startsWith('tasks-')){
+        const dateStr = key.slice('tasks-'.length);
+        tasks.forEach(t=>{
+          if(!t.done && t.deadline && t.deadline <= threshold){
+            results.push({ name: t.name, deadline: t.deadline, overdue: t.deadline < today, scope: 'day', dateStr });
+          }
+        });
+      } else if(key.startsWith('month-tasks-')){
+        tasks.forEach(t=>{
+          if(!t.done && t.deadline && t.deadline <= threshold){
+            results.push({ name: t.name, deadline: t.deadline, overdue: t.deadline < today, scope: 'month' });
+          }
+        });
+      }
+    });
+    results.sort((a,b)=> a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
+    return results;
   }
   function toMin(hhmm){ const [h,m] = hhmm.split(':').map(Number); return h*60+m; }
   function toHHMM(min){
@@ -277,9 +326,10 @@
   const mainSub = document.getElementById('mainSub');
 
   homeLink.addEventListener('click', ()=>{ state.screen='today'; state.viewDate=todayStr(); render(); });
-  logoutLink.addEventListener('click', async ()=>{
-    await sb.auth.signOut();
+  logoutLink.addEventListener('click', ()=>{
     currentUserId = null;
+    lsSet('current-user-id', null);
+    lsSet('current-username', null);
     cache = {}; schedCache = {};
     state.screen = 'auth';
     render();
@@ -292,14 +342,24 @@
       state.monthCursor = { year: d.getFullYear(), month: d.getMonth() };
     }
     const s = state.screen;
-    homeLink.style.display = (s === 'today' || s === 'auth') ? 'none' : 'inline';
-    logoutLink.style.display = (s === 'auth') ? 'none' : 'inline';
+    homeLink.style.display = (s === 'today' || s === 'auth' || s === 'admin-gate' || s === 'admin') ? 'none' : 'inline';
+    logoutLink.style.display = (s === 'auth' || s === 'admin-gate' || s === 'admin') ? 'none' : 'inline';
 
     if(s === 'auth'){
       eyebrowText.textContent = 'WORK TRACKER';
       mainTitle.textContent = 'ログイン';
       mainSub.textContent = 'アカウントでログインすると、どの端末からでも同じ業務データを見られます。';
       renderAuth();
+    } else if(s === 'admin-gate'){
+      eyebrowText.textContent = 'WORK TRACKER · 管理者';
+      mainTitle.textContent = '管理者ページ';
+      mainSub.textContent = 'パスワードを入力してください。';
+      renderAdminGate();
+    } else if(s === 'admin'){
+      eyebrowText.textContent = 'WORK TRACKER · 管理者';
+      mainTitle.textContent = '管理者ページ';
+      mainSub.textContent = '登録ユーザーの一覧とパスワードのリセットができます。';
+      renderAdmin();
     } else if(s === 'today'){
       eyebrowText.textContent = 'WORK TRACKER';
       mainTitle.textContent = '今日の業務';
@@ -334,9 +394,15 @@
   }
 
   // --- Auth: login / signup ---
-  const AUTH_DOMAIN = '@gyomu-tracker.local';
-  function usernameToEmail(username){ return username.trim().toLowerCase() + AUTH_DOMAIN; }
+  const ADMIN_PASSWORD = '7Gramcam';
+  const DEFAULT_RESET_PASSWORD = 'gyomu0000';
   function validUsername(username){ return /^[a-zA-Z0-9_]{3,20}$/.test(username.trim()); }
+
+  async function hashPassword(pw){
+    const enc = new TextEncoder().encode(pw);
+    const buf = await crypto.subtle.digest('SHA-256', enc);
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
 
   function renderAuth(){
     wizard.innerHTML = `
@@ -360,39 +426,43 @@
           <button class="btn btn-primary" id="authSubmit" ${state.authBusy ? 'disabled' : ''}>${state.authBusy ? '処理中…' : (state.authMode==='login' ? 'ログイン' : 'アカウント作成')}</button>
         </div>
       </div>
+      <button class="friend-link" id="goAdminGate">🔒 管理者はこちら（パスワードを忘れた方の対応）</button>
     `;
     document.getElementById('tabLogin').addEventListener('click', ()=>{ state.authMode='login'; state.authError=''; render(); });
     document.getElementById('tabSignup').addEventListener('click', ()=>{ state.authMode='signup'; state.authError=''; render(); });
     document.getElementById('authUsername').addEventListener('input', (e)=>{ state.authEmail = e.target.value; });
     document.getElementById('authPassword').addEventListener('input', (e)=>{ state.authPassword = e.target.value; });
+    document.getElementById('goAdminGate').addEventListener('click', ()=>{
+      state.adminPassword = ''; state.adminError = ''; state.adminUsers = null;
+      state.screen = 'admin-gate';
+      render();
+    });
     document.getElementById('authSubmit').addEventListener('click', async ()=>{
       state.authError = ''; state.authNotice = '';
       const username = state.authEmail.trim();
       if(!username || !state.authPassword){ state.authError = 'ユーザー名とパスワードを入力してください。'; render(); return; }
       if(!validUsername(username)){ state.authError = 'ユーザー名は半角英数字と_のみ、3〜20文字で入力してください。'; render(); return; }
-      const syntheticEmail = usernameToEmail(username);
       state.authBusy = true; render();
       try{
+        let userId;
         if(state.authMode === 'signup'){
-          const { data, error } = await sb.auth.signUp({
-            email: syntheticEmail,
-            password: state.authPassword,
-            options: { data: { username } },
-          });
+          const { data: existing } = await sb.from('app_users').select('id').eq('username', username).maybeSingle();
+          if(existing){ throw new Error('そのユーザー名はすでに使われています。'); }
+          const hash = await hashPassword(state.authPassword);
+          const { data, error } = await sb.from('app_users').insert({ username, password_hash: hash }).select().single();
           if(error) throw error;
-          if(!data.session){
-            state.authBusy = false;
-            state.authNotice = 'メール確認が有効になっているため、このままではログインできません。Supabaseの「Confirm email」をオフにしてから、もう一度登録してください。';
-            render();
-            return;
-          }
+          userId = data.id;
         } else {
-          const { error } = await sb.auth.signInWithPassword({ email: syntheticEmail, password: state.authPassword });
+          const { data, error } = await sb.from('app_users').select('*').eq('username', username).maybeSingle();
           if(error) throw error;
+          if(!data){ throw new Error('ユーザーが見つかりません。ユーザー名を確認するか、新規登録してください。'); }
+          const hash = await hashPassword(state.authPassword);
+          if(hash !== data.password_hash){ throw new Error('パスワードが違います。'); }
+          userId = data.id;
         }
-        const { data: sessionData } = await sb.auth.getSession();
-        currentUserId = sessionData.session ? sessionData.session.user.id : null;
-        if(!currentUserId){ throw new Error('ログインに失敗しました。'); }
+        currentUserId = userId;
+        lsSet('current-user-id', userId);
+        lsSet('current-username', username);
         await loadAllFromSupabase();
         state.authBusy = false;
         state.authPassword = '';
@@ -401,11 +471,71 @@
         render();
       } catch(err){
         state.authBusy = false;
-        const msg = (err && err.message) ? err.message : 'エラーが発生しました。';
-        state.authError = msg.includes('already registered') ? 'そのユーザー名はすでに使われています。' : msg;
+        state.authError = (err && err.message) ? err.message : 'エラーが発生しました。';
         render();
       }
     });
+  }
+
+  // --- Admin: view registered users, reset a forgotten password ---
+  function renderAdminGate(){
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="field">
+          <label class="field-label">管理者パスワード</label>
+          <input type="password" id="adminPw" value="${state.adminPassword}" placeholder="管理者パスワード">
+        </div>
+        ${state.adminError ? `<div class="sched-unfit">${state.adminError}</div>` : ''}
+        <div class="btn-row">
+          <button class="btn btn-ghost" id="adminBack">戻る</button>
+          <button class="btn btn-primary" id="adminUnlock">開く</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('adminPw').addEventListener('input', (e)=>{ state.adminPassword = e.target.value; });
+    document.getElementById('adminBack').addEventListener('click', ()=>{ state.screen = 'auth'; render(); });
+    document.getElementById('adminUnlock').addEventListener('click', async ()=>{
+      if(state.adminPassword !== ADMIN_PASSWORD){ state.adminError = 'パスワードが違います。'; render(); return; }
+      state.adminError = '';
+      const { data, error } = await sb.from('app_users').select('id, username, created_at').order('username');
+      state.adminUsers = error ? [] : (data || []);
+      state.adminNotice = '';
+      state.screen = 'admin';
+      render();
+    });
+  }
+
+  function renderAdmin(){
+    const rowsHtml = (state.adminUsers && state.adminUsers.length)
+      ? state.adminUsers.map(u => `
+          <div class="friend-row">
+            <div class="name">${u.username}</div>
+            <button data-resetid="${u.id}" data-resetname="${u.username}">リセット</button>
+          </div>
+        `).join('')
+      : `<div class="empty-note">登録されているユーザーがいません。</div>`;
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="q-label">🔑 管理者メニュー</div>
+        <div class="q-hint" style="margin-bottom:14px;">登録されているユーザー一覧です。「リセット」を押すと、そのユーザーのパスワードを初期値（<b>${DEFAULT_RESET_PASSWORD}</b>）に戻します。リセット後、本人に伝えてログインし直してもらってください。</div>
+        ${rowsHtml}
+        ${state.adminNotice ? `<div class="sched-busy-note" style="color:var(--teal); margin-top:10px;">${state.adminNotice}</div>` : ''}
+      </div>
+      <div class="btn-row"><button class="btn btn-ghost" id="adminExit">閉じる</button></div>
+    `;
+    document.querySelectorAll('[data-resetid]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const id = btn.dataset.resetid;
+        const name = btn.dataset.resetname;
+        const hash = await hashPassword(DEFAULT_RESET_PASSWORD);
+        const { error } = await sb.from('app_users').update({ password_hash: hash }).eq('id', id);
+        state.adminNotice = error
+          ? 'リセットに失敗しました。'
+          : `${name} さんのパスワードを「${DEFAULT_RESET_PASSWORD}」にリセットしました。`;
+        render();
+      });
+    });
+    document.getElementById('adminExit').addEventListener('click', ()=>{ state.screen = 'auth'; render(); });
   }
 
   // --- Today screen ---
@@ -449,7 +579,26 @@
       </div>
     `).join('') : `<div class="empty-note">まだ業務が登録されていません。</div>`;
 
+    let alertHtml = '';
+    if(opts.showMonthLink){
+      const upcoming = getUpcomingDeadlineTasks();
+      if(upcoming.length){
+        alertHtml = `
+          <div class="deadline-alert">
+            <div class="title">⚠️ 期限が近い業務が${upcoming.length}件あります</div>
+            ${upcoming.map(u=>`
+              <div class="item ${u.overdue ? 'overdue' : ''}">
+                <span>${u.name}${u.scope === 'month' ? '（今月の業務）' : ''}</span>
+                <span class="when">${u.overdue ? '期限切れ ' : ''}${fmtDateLabel(u.deadline)}</span>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
+    }
+
     wizard.innerHTML = `
+      ${alertHtml}
       <div class="card">
         <div class="progress-bar-wrap"><span>進み具合</span><b>${doneCount}/${total}</b></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
@@ -1158,9 +1307,9 @@
   (async function start(){
     wizard.innerHTML = `<div class="empty-note">読み込み中…</div>`;
     try{
-      const { data: sessionData } = await sb.auth.getSession();
-      if(sessionData && sessionData.session){
-        currentUserId = sessionData.session.user.id;
+      const savedUserId = lsGet('current-user-id');
+      if(savedUserId){
+        currentUserId = savedUserId;
         await loadAllFromSupabase();
         state.screen = 'today';
       } else {

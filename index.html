@@ -176,6 +176,16 @@
   function saveMonthTasks(year, month, tasks){ saveTasksByKey(monthTasksKey(year, month), tasks); }
 
   function loadTasksByKey(key){ return cache[key] || []; }
+  function deleteDayTasksByMonthTaskId(monthTaskId){
+    Object.keys(cache).forEach(key=>{
+      if(!key.startsWith('tasks-')) return;
+      const list = cache[key] || [];
+      const filtered = list.filter(t => t.monthTaskId !== monthTaskId);
+      if(filtered.length !== list.length){
+        saveTasksByKey(key, filtered);
+      }
+    });
+  }
   function saveTasksByKey(key, newList){
     const oldList = cache[key] || [];
     diffAndSync(key, oldList, newList);
@@ -204,7 +214,7 @@
   }
   function buildRow(table, extra, item){
     if(table === 'tasks'){
-      return { id:item.id, user_id:currentUserId, date:extra.date, name:item.name, min:item.min, time:item.time||'', deadline:item.deadline||null, done:!!item.done };
+      return { id:item.id, user_id:currentUserId, date:extra.date, name:item.name, min:item.min, time:item.time||'', deadline:item.deadline||null, done:!!item.done, month_task_id:item.monthTaskId||null };
     }
     return { id:item.id, user_id:currentUserId, year:extra.year, month:extra.month, name:item.name, min:item.min, deadline:item.deadline||null, done:!!item.done, recurring_id:item.recurringId||null, scheduled:!!item.scheduled };
   }
@@ -240,7 +250,7 @@
     (taskRows||[]).forEach(r=>{
       const key = tasksKey(r.date);
       if(!cache[key]) cache[key] = [];
-      cache[key].push({ id:r.id, name:r.name, min:r.min, time:r.time||'', deadline:r.deadline||'', done:r.done });
+      cache[key].push({ id:r.id, name:r.name, min:r.min, time:r.time||'', deadline:r.deadline||'', done:r.done, monthTaskId:r.month_task_id||null });
     });
     (monthRows||[]).forEach(r=>{
       const key = monthTasksKey(r.year, r.month - 1);
@@ -253,9 +263,9 @@
     state.recurringTemplates = recurRows || [];
   }
 
-  async function createRecurringTemplate(name, min, deadlineDay){
+  async function createRecurringTemplate(name, min, deadlineDay, startYm, endYm){
     const { data, error } = await sb.from('recurring_month_tasks')
-      .insert({ user_id: currentUserId, name, min, deadline_day: deadlineDay })
+      .insert({ user_id: currentUserId, name, min, deadline_day: deadlineDay, start_ym: startYm || null, end_ym: endYm || null })
       .select().single();
     if(error){
       console.error('createRecurringTemplate', error);
@@ -278,10 +288,17 @@
   async function ensureRecurringTasksForMonth(year, month){
     state.recurringSyncError = '';
     if(!state.recurringTemplates || !state.recurringTemplates.length) return false;
+    const ym = year + '-' + String(month+1).padStart(2,'0');
+    const inRange = state.recurringTemplates.filter(t=>{
+      if(t.start_ym && ym < t.start_ym) return false;
+      if(t.end_ym && ym > t.end_ym) return false;
+      return true;
+    });
+    if(!inRange.length) return false;
     const key = monthTasksKey(year, month);
     const existing = cache[key] || [];
     const existingRecurIds = new Set(existing.map(t => t.recurringId).filter(Boolean));
-    const missing = state.recurringTemplates.filter(t => !existingRecurIds.has(t.id));
+    const missing = inRange.filter(t => !existingRecurIds.has(t.id));
     if(!missing.length) return false;
     if(!currentUserId){ state.recurringSyncError = 'ログイン情報が見つかりませんでした（currentUserId未設定）。'; return false; }
     const numDays = daysInMonth(year, month);
@@ -312,6 +329,7 @@
     monthCursor: null,    // {year, month} 0-indexed month
     formName: '', formMin: 30, formTimeOn: false, formTime: '', formDeadline: '',
     formRecurring: false, formDeadlineDay: '', formError: '',
+    formStartYm: '', formEndYm: '',
     recurringTemplates: null,
     recurringSyncError: '',
     formScope: 'day',        // 'day' | 'month' — which kind of task list the form is editing
@@ -323,6 +341,7 @@
     monthSchedDeadline: '',
     monthSchedMinPerDay: 60,
     monthSchedSkipWeekends: true,
+    monthSchedExcludeDays: [],
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
@@ -782,6 +801,15 @@
               <input type="number" id="taskDeadlineDay" min="1" max="28" value="${state.formDeadlineDay}" placeholder="例：25">
               <div class="q-hint" style="font-size:11px; margin-top:6px;">設定すると、毎月その日が期限として自動で設定されます。</div>
             </div>
+            <div class="field">
+              <label class="field-label">開始月</label>
+              <input type="month" id="taskStartYm" value="${state.formStartYm}">
+            </div>
+            <div class="field">
+              <label class="field-label">終了月（任意）</label>
+              <input type="month" id="taskEndYm" value="${state.formEndYm}">
+              <div class="q-hint" style="font-size:11px; margin-top:6px;">空欄なら、期限なく毎月ずっと繰り返されます。</div>
+            </div>
           ` : `<div class="q-hint" style="font-size:11.5px; margin-bottom:6px;">来月以降、月が変わるたびに自動でこの業務が追加されます。</div>`}
         ` : ''}
         ${state.formError ? `<div class="sched-unfit">${state.formError}</div>` : ''}
@@ -827,6 +855,10 @@
     });
     const deadlineDayEl = document.getElementById('taskDeadlineDay');
     if(deadlineDayEl) deadlineDayEl.addEventListener('input', (e)=>{ state.formDeadlineDay = e.target.value; });
+    const startYmEl = document.getElementById('taskStartYm');
+    if(startYmEl) startYmEl.addEventListener('input', (e)=>{ state.formStartYm = e.target.value; });
+    const endYmEl = document.getElementById('taskEndYm');
+    if(endYmEl) endYmEl.addEventListener('input', (e)=>{ state.formEndYm = e.target.value; });
 
     document.getElementById('cancelBtn').addEventListener('click', ()=>{
       state.screen = state.formReturnScreen;
@@ -843,7 +875,7 @@
         saveBtn.disabled = true; saveBtn.textContent = '保存中…';
         try{
           const dayNum = state.formDeadlineDay ? Number(state.formDeadlineDay) : null;
-          const templateId = await createRecurringTemplate(state.formName.trim(), state.formMin, dayNum);
+          const templateId = await createRecurringTemplate(state.formName.trim(), state.formMin, dayNum, state.formStartYm, state.formEndYm);
           const { year, month } = state.monthCursor;
           const deadline = dayNum ? monthDateStr(year, month, Math.min(dayNum, daysInMonth(year, month))) : '';
           list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, deadline, done: false, recurringId: templateId });
@@ -1054,10 +1086,11 @@
   }
 
   // --- Monthly schedule builder: fit "this month" tasks onto specific days ---
-  function computeMonthSchedule(year, month, deadlineDateStr, minPerDay, skipWeekends){
+  function computeMonthSchedule(year, month, deadlineDateStr, minPerDay, skipWeekends, excludeDays){
     const monthTasks = loadMonthTasks(year, month).filter(t => !t.done && !t.scheduled);
     const todayD = todayStr();
     const numDays = daysInMonth(year, month);
+    const excludeSet = new Set(excludeDays || []);
 
     // candidate days: from today (or day 1 if viewing a future month) through the deadline date, inclusive
     const candidates = [];
@@ -1065,6 +1098,7 @@
       const ds = monthDateStr(year, month, d);
       if(ds < todayD) continue;
       if(ds > deadlineDateStr) break;
+      if(excludeSet.has(ds)) continue;
       const dow = new Date(year, month, d).getDay();
       if(skipWeekends && (dow === 0 || dow === 6)) continue;
       const dayTasks = loadTasks(ds).filter(t => !t.done);
@@ -1124,7 +1158,7 @@
     state.recurringTemplates = templates; // keep the shared cache in sync with what's actually in the DB
     const rowsHtml = templates.length ? templates.map(t=>`
       <div class="friend-row">
-        <div class="name">${t.name}<span style="color:var(--ink-soft); font-size:11px;"> ・${t.min}分${t.deadline_day ? ' ・毎月' + t.deadline_day + '日が期限' : ''}</span></div>
+        <div class="name">${t.name}<span style="color:var(--ink-soft); font-size:11px;"> ・${t.min}分${t.deadline_day ? ' ・毎月' + t.deadline_day + '日が期限' : ''}${t.start_ym ? ' ・' + t.start_ym + '〜' + (t.end_ym || '無期限') : ''}</span></div>
         <button data-stopid="${t.id}">停止</button>
       </div>
     `).join('') : `<div class="empty-note">毎月繰り返す業務はまだ登録されていません。「今月の業務を追加」で「毎月繰り返す業務にする」をオンにすると、ここに表示されます。</div>`;
@@ -1169,6 +1203,14 @@
           <label class="field-label" style="margin:0;">土日は含めない</label>
           <div class="switch ${state.monthSchedSkipWeekends?'on':''}" id="skipWeekendToggle"><div class="knob"></div></div>
         </div>
+        <label class="field-label">取りかかれない日（任意）</label>
+        <div id="excludeDaysList">${(state.monthSchedExcludeDays||[]).map((d,i)=>`
+          <div class="busy-row">
+            <input type="date" data-excludeidx="${i}" value="${d}">
+            <button data-excluderm="${i}">削除</button>
+          </div>
+        `).join('')}</div>
+        <button class="add-busy-btn" id="addExcludeDayBtn">＋ 取りかかれない日を追加</button>
         <div class="btn-row">
           <button class="btn btn-ghost" id="backMonthFromSched">月間ビューに戻る</button>
           <button class="btn btn-primary" id="runMonthSchedule">スケジュールを組む</button>
@@ -1194,11 +1236,26 @@
       state.monthSchedSkipWeekends = !state.monthSchedSkipWeekends;
       render();
     });
+    if(!state.monthSchedExcludeDays) state.monthSchedExcludeDays = [];
+    wizard.querySelectorAll('[data-excludeidx]').forEach(el=>{
+      el.addEventListener('input', ()=>{ state.monthSchedExcludeDays[Number(el.dataset.excludeidx)] = el.value; });
+    });
+    wizard.querySelectorAll('[data-excluderm]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        state.monthSchedExcludeDays.splice(Number(btn.dataset.excluderm), 1);
+        render();
+      });
+    });
+    document.getElementById('addExcludeDayBtn').addEventListener('click', ()=>{
+      state.monthSchedExcludeDays.push('');
+      render();
+    });
     document.getElementById('backMonthFromSched').addEventListener('click', ()=>{ state.screen='month'; render(); });
     document.getElementById('runMonthSchedule').addEventListener('click', ()=>{
       if(!state.monthSchedDeadline) return;
       const { year, month } = state.monthCursor;
-      state.monthSchedResult = computeMonthSchedule(year, month, state.monthSchedDeadline, state.monthSchedMinPerDay, state.monthSchedSkipWeekends);
+      const excludeDays = (state.monthSchedExcludeDays||[]).filter(Boolean);
+      state.monthSchedResult = computeMonthSchedule(year, month, state.monthSchedDeadline, state.monthSchedMinPerDay, state.monthSchedSkipWeekends, excludeDays);
       render();
     });
   }
@@ -1244,7 +1301,7 @@
       r.placed.forEach(item=>{
         const dayList = loadTasks(item.dateStr);
         const label = item.totalParts > 1 ? `${item.task.name}（${item.part}/${item.totalParts}）` : item.task.name;
-        dayList.push({ id: crypto.randomUUID(), name: label, min: item.min, time: '', done: false });
+        dayList.push({ id: crypto.randomUUID(), name: label, min: item.min, time: '', done: false, monthTaskId: item.task.id });
         saveTasks(item.dateStr, dayList);
       });
 
@@ -1418,12 +1475,15 @@
         const id = btn.dataset.mdel;
         const list = loadMonthTasks(year, month).filter(x=>String(x.id)!==id);
         saveMonthTasks(year, month, list);
+        deleteDayTasksByMonthTaskId(id);
         renderMonth();
       });
     });
     document.getElementById('addMonthTaskBtn').addEventListener('click', ()=>{
       state.editingTaskId = null;
       state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = ''; state.formRecurring = false; state.formDeadlineDay = ''; state.formError = '';
+      state.formStartYm = year + '-' + String(month+1).padStart(2,'0');
+      state.formEndYm = '';
       state.formScope = 'month';
       state.formStorageKey = monthTaskKey;
       state.formReturnScreen = 'month';

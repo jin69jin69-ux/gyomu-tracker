@@ -383,6 +383,7 @@
     bulkResetNotice: '', bulkResetError: '',
     bulkRangeStart: '', bulkRangeEnd: '',
     monthPickerOpen: false, monthPickerYear: null,
+    dayPickerOpen: false, dayPickerYear: null, dayPickerMonth: null,
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
@@ -902,12 +903,41 @@
 
     let dateNavHtml = '';
     if(opts.showMonthLink){
+      const [vy, vm, vdNum] = state.viewDate.split('-').map(Number);
+      if(!state.dayPickerYear && state.dayPickerYear !== 0){ state.dayPickerYear = vy; state.dayPickerMonth = vm - 1; }
+      const pickerHtml = state.dayPickerOpen ? (()=>{
+        const py = state.dayPickerYear, pm = state.dayPickerMonth;
+        const numDays = daysInMonth(py, pm);
+        const firstDow = new Date(py, pm, 1).getDay();
+        const dowLabels = ['日','月','火','水','木','金','土'].map(d=>`<div class="month-dow">${d}</div>`).join('');
+        const blanks = Array.from({length:firstDow}).map(()=>`<div class="month-cell empty"></div>`).join('');
+        const todayD = todayStr();
+        const cells = Array.from({length:numDays}).map((_,i)=>{
+          const d = i+1;
+          const ds = monthDateStr(py, pm, d);
+          let cls = 'month-cell';
+          if(ds === todayD) cls += ' today';
+          if(ds === state.viewDate) cls += ' all-done';
+          return `<div class="${cls}" data-pickday="${ds}"><div class="daynum">${d}</div></div>`;
+        }).join('');
+        return `
+          <div class="card" style="margin-bottom:14px;">
+            <div class="month-nav" style="margin-bottom:12px;">
+              <button id="dayPickerPrevMonth">◀</button>
+              <div class="label">${py}年${pm+1}月</div>
+              <button id="dayPickerNextMonth">▶</button>
+            </div>
+            <div class="month-grid">${dowLabels}${blanks}${cells}</div>
+          </div>
+        `;
+      })() : '';
       dateNavHtml = `
         <div class="month-nav">
           <button id="prevDay">◀</button>
-          <div class="label" style="font-size:16px;">${fmtDateLabel(state.viewDate)}</div>
+          <div class="label" id="dateLabel" style="font-size:16px; cursor:pointer;">${fmtDateLabel(state.viewDate)} ▾</div>
           <button id="nextDay">▶</button>
         </div>
+        ${pickerHtml}
         ${state.viewDate !== todayStr() ? `<button class="friend-link" id="jumpToday" style="margin-top:-6px; margin-bottom:14px;">📍 今日に戻る</button>` : ''}
       `;
     }
@@ -988,11 +1018,37 @@
     const backMonth = document.getElementById('backMonth');
     if(backMonth) backMonth.addEventListener('click', ()=>{ state.screen='month'; render(); });
     const prevDay = document.getElementById('prevDay');
-    if(prevDay) prevDay.addEventListener('click', ()=>{ state.viewDate = addDays(state.viewDate, -1); render(); });
+    if(prevDay) prevDay.addEventListener('click', ()=>{ state.viewDate = addDays(state.viewDate, -1); state.dayPickerOpen = false; render(); });
     const nextDay = document.getElementById('nextDay');
-    if(nextDay) nextDay.addEventListener('click', ()=>{ state.viewDate = addDays(state.viewDate, 1); render(); });
+    if(nextDay) nextDay.addEventListener('click', ()=>{ state.viewDate = addDays(state.viewDate, 1); state.dayPickerOpen = false; render(); });
     const jumpToday = document.getElementById('jumpToday');
-    if(jumpToday) jumpToday.addEventListener('click', ()=>{ state.viewDate = todayStr(); render(); });
+    if(jumpToday) jumpToday.addEventListener('click', ()=>{ state.viewDate = todayStr(); state.dayPickerOpen = false; render(); });
+    const dateLabel = document.getElementById('dateLabel');
+    if(dateLabel) dateLabel.addEventListener('click', ()=>{
+      if(!state.dayPickerOpen){
+        const [vy, vm] = state.viewDate.split('-').map(Number);
+        state.dayPickerYear = vy; state.dayPickerMonth = vm - 1;
+      }
+      state.dayPickerOpen = !state.dayPickerOpen;
+      render();
+    });
+    const dayPickerPrevMonth = document.getElementById('dayPickerPrevMonth');
+    if(dayPickerPrevMonth) dayPickerPrevMonth.addEventListener('click', ()=>{
+      state.dayPickerMonth--; if(state.dayPickerMonth < 0){ state.dayPickerMonth = 11; state.dayPickerYear--; }
+      render();
+    });
+    const dayPickerNextMonth = document.getElementById('dayPickerNextMonth');
+    if(dayPickerNextMonth) dayPickerNextMonth.addEventListener('click', ()=>{
+      state.dayPickerMonth++; if(state.dayPickerMonth > 11){ state.dayPickerMonth = 0; state.dayPickerYear++; }
+      render();
+    });
+    wizard.querySelectorAll('[data-pickday]').forEach(cell=>{
+      cell.addEventListener('click', ()=>{
+        state.viewDate = cell.dataset.pickday;
+        state.dayPickerOpen = false;
+        render();
+      });
+    });
   }
 
   // --- Add/Edit task screen ---

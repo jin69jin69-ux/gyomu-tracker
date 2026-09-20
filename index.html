@@ -190,6 +190,110 @@
   function monthTasksKey(year, month){ return 'month-tasks-' + year + '-' + String(month+1).padStart(2,'0'); }
   function loadMonthTasks(year, month){ return loadTasksByKey(monthTasksKey(year, month)); }
   function saveMonthTasks(year, month, tasks){ saveTasksByKey(monthTasksKey(year, month), tasks); }
+  function eventsKey(dateStr){ return 'events-' + dateStr; }
+  function loadEvents(dateStr){ return loadTasksByKey(eventsKey(dateStr)); }
+  function saveEvents(dateStr, events){ saveTasksByKey(eventsKey(dateStr), events); }
+
+  // --- Event import: Excel/CSV and PDF (best-effort) ---
+  function loadScriptOnce(src){
+    return new Promise((resolve, reject)=>{
+      if(document.querySelector(`script[src="${src}"]`)){ resolve(); return; }
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('読み込みに失敗しました（ネットワークを確認してください）。'));
+      document.head.appendChild(s);
+    });
+  }
+  function parseFlexibleDateString(s){
+    if(!s) return '';
+    s = String(s).trim();
+    let m = s.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+    if(m) return m[1] + '-' + m[2].padStart(2,'0') + '-' + m[3].padStart(2,'0');
+    m = s.match(/^(\d{1,2})[\/\-月](\d{1,2})/);
+    if(m){
+      const y = new Date().getFullYear();
+      return y + '-' + m[1].padStart(2,'0') + '-' + m[2].padStart(2,'0');
+    }
+    return '';
+  }
+  async function parseExcelFile(file){
+    await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    const results = [];
+    rows.forEach(row=>{
+      let dateVal = null, name = '', timeVal = '';
+      Object.keys(row).forEach(key=>{
+        const k = String(key);
+        const v = row[key];
+        if(/日付|日程|date/i.test(k) && !dateVal && v !== '') dateVal = v;
+        else if(/予定|名前|内容|件名|name|title/i.test(k) && !name && v !== '') name = String(v).trim();
+        else if(/時刻|時間|time/i.test(k) && !timeVal && v !== '') timeVal = v;
+      });
+      if(!dateVal && !name){
+        const vals = Object.values(row);
+        if(vals[0] !== '' && vals[0] != null) dateVal = vals[0];
+        if(vals[1] !== '' && vals[1] != null) name = String(vals[1]).trim();
+        if(vals[2] !== '' && vals[2] != null) timeVal = vals[2];
+      }
+      let dateStr = '';
+      if(dateVal instanceof Date){
+        dateStr = dateVal.getFullYear() + '-' + String(dateVal.getMonth()+1).padStart(2,'0') + '-' + String(dateVal.getDate()).padStart(2,'0');
+      } else if(dateVal){
+        dateStr = parseFlexibleDateString(dateVal);
+      }
+      let timeStr = '';
+      if(timeVal instanceof Date){
+        timeStr = String(timeVal.getHours()).padStart(2,'0') + ':' + String(timeVal.getMinutes()).padStart(2,'0');
+      } else if(timeVal){
+        const tm = String(timeVal).match(/(\d{1,2}):(\d{2})/);
+        if(tm) timeStr = tm[1].padStart(2,'0') + ':' + tm[2];
+      }
+      if(dateStr && name) results.push({ date: dateStr, name, time: timeStr });
+    });
+    return results;
+  }
+  async function parsePdfFile(file){
+    await loadScriptOnce('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const lines = [];
+    for(let p=1; p<=pdf.numPages; p++){
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      const byY = new Map();
+      content.items.forEach(item=>{
+        const y = Math.round(item.transform[5]);
+        if(!byY.has(y)) byY.set(y, []);
+        byY.get(y).push(item);
+      });
+      const ys = Array.from(byY.keys()).sort((a,b)=>b-a);
+      ys.forEach(y=>{
+        const items = byY.get(y).sort((a,b)=>a.transform[4]-b.transform[4]);
+        lines.push(items.map(i=>i.str).join(''));
+      });
+    }
+    const results = [];
+    const dateRe = /(\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}日?|\d{1,2}[\/\-月]\d{1,2}日?)/;
+    const timeRe = /(\d{1,2}):(\d{2})/;
+    lines.forEach(line=>{
+      const dm = line.match(dateRe);
+      if(!dm) return;
+      const dateStr = parseFlexibleDateString(dm[0]);
+      if(!dateStr) return;
+      let rest = line.replace(dm[0], '').trim();
+      const tm = rest.match(timeRe);
+      let timeStr = '';
+      if(tm){ timeStr = tm[1].padStart(2,'0') + ':' + tm[2]; rest = rest.replace(tm[0], '').trim(); }
+      rest = rest.replace(/^[\s:：・,、\-]+/, '').trim();
+      if(rest) results.push({ date: dateStr, name: rest, time: timeStr });
+    });
+    return results;
+  }
 
   function loadTasksByKey(key){ return (cache[key] || []).slice(); }
   function deleteDayTasksByMonthTaskId(monthTaskId){
@@ -223,6 +327,9 @@
       const [y, m] = key.slice('month-tasks-'.length).split('-').map(Number);
       return { table: 'month_tasks', extra: { year: y, month: m } };
     }
+    if(key.startsWith('events-')){
+      return { table: 'events', extra: { date: key.slice('events-'.length) } };
+    }
     if(key.startsWith('tasks-')){
       return { table: 'tasks', extra: { date: key.slice('tasks-'.length) } };
     }
@@ -231,6 +338,9 @@
   function buildRow(table, extra, item){
     if(table === 'tasks'){
       return { id:item.id, user_id:currentUserId, date:extra.date, name:item.name, min:item.min, time:item.time||'', deadline:item.deadline||null, done:!!item.done, month_task_id:item.monthTaskId||null };
+    }
+    if(table === 'events'){
+      return { id:item.id, user_id:currentUserId, date:extra.date, name:item.name, time:item.time||'' };
     }
     return { id:item.id, user_id:currentUserId, year:extra.year, month:extra.month, name:item.name, min:item.min, deadline:item.deadline||null, done:!!item.done, recurring_id:item.recurringId||null, scheduled:!!item.scheduled };
   }
@@ -257,11 +367,12 @@
 
   async function loadAllFromSupabase(){
     cache = {}; schedCache = {};
-    const [{ data: taskRows }, { data: monthRows }, { data: schedRows }, { data: recurRows }] = await Promise.all([
+    const [{ data: taskRows }, { data: monthRows }, { data: schedRows }, { data: recurRows }, { data: eventRows }] = await Promise.all([
       sb.from('tasks').select('*'),
       sb.from('month_tasks').select('*'),
       sb.from('sched_settings').select('*'),
       sb.from('recurring_month_tasks').select('*'),
+      sb.from('events').select('*'),
     ]);
     (taskRows||[]).forEach(r=>{
       const key = tasksKey(r.date);
@@ -275,6 +386,11 @@
     });
     (schedRows||[]).forEach(r=>{
       schedCache[r.date] = { deadline:r.deadline||'', busyBlocks:r.busy_blocks||[] };
+    });
+    (eventRows||[]).forEach(r=>{
+      const key = eventsKey(r.date);
+      if(!cache[key]) cache[key] = [];
+      cache[key].push({ id:r.id, name:r.name, time:r.time||'' });
     });
     state.recurringTemplates = recurRows || [];
   }
@@ -384,6 +500,8 @@
     bulkRangeStart: '', bulkRangeEnd: '',
     monthPickerOpen: false, monthPickerYear: null,
     dayPickerOpen: false, dayPickerYear: null, dayPickerMonth: null,
+    editingEventId: null, formEventName: '', formEventTime: '', formEventDate: '', eventReturnScreen: 'today',
+    importRows: null, importError: '', importBusy: false,
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
@@ -492,6 +610,16 @@
       mainTitle.textContent = state.editingTaskId ? '業務を編集' : '業務を追加';
       mainSub.textContent = '業務名と、かかりそうな時間を入力してください。';
       renderAddTask();
+    } else if(s === 'add-event'){
+      eyebrowText.textContent = 'WORK TRACKER · 予定登録';
+      mainTitle.textContent = state.editingEventId ? '予定を編集' : '予定を追加';
+      mainSub.textContent = '日付・予定名・時刻（任意）を入力してください。';
+      renderAddEvent();
+    } else if(s === 'import-events'){
+      eyebrowText.textContent = 'WORK TRACKER · 予定の読み込み';
+      mainTitle.textContent = '予定を読み込む';
+      mainSub.textContent = 'Excel/CSVかPDFから予定をまとめて読み込めます。登録前に必ず内容を確認できます。';
+      renderImportEvents();
     } else if(s === 'month'){
       eyebrowText.textContent = 'WORK TRACKER · 月間ビュー';
       mainTitle.textContent = '月間の進み具合';
@@ -562,6 +690,7 @@
     const monthCount = countCacheByPrefix('month-tasks-');
     const recurCount = (state.recurringTemplates || []).length;
     const schedCount = Object.keys(schedCache || {}).length;
+    const eventCount = countCacheByPrefix('events-');
 
     wizard.innerHTML = `
       <div class="card">
@@ -578,6 +707,11 @@
         <div class="q-label" style="font-weight:900; margin-bottom:4px;">毎月繰り返す設定（テンプレート）</div>
         <div class="q-hint" style="margin-bottom:10px;">現在 ${recurCount} 件登録されています。重複して作られてしまった場合は、ここでまとめて削除できます。</div>
         <button class="btn btn-ghost" id="resetRecurring" style="width:100%; color:var(--danger); border-color:var(--danger);">毎月繰り返す設定を全部削除</button>
+      </div>
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:4px;">予定（カレンダーイベント）</div>
+        <div class="q-hint" style="margin-bottom:10px;">現在 ${eventCount} 件登録されています。手動追加・読み込みで登録した予定がまとめて削除されます。</div>
+        <button class="btn btn-ghost" id="resetEvents" style="width:100%; color:var(--danger); border-color:var(--danger);">予定を全部削除</button>
       </div>
       <div class="card">
         <div class="q-label" style="font-weight:900; margin-bottom:4px;">スケジュール設定（期限時刻・動けない時間帯）</div>
@@ -666,6 +800,16 @@
       if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
       schedCache = {};
       state.bulkResetNotice = 'スケジュール設定を全部削除しました。';
+      render();
+    });
+    document.getElementById('resetEvents').addEventListener('click', async ()=>{
+      if(!confirm(`本当に、予定を全部（${eventCount}件）削除しますか？この操作は元に戻せません。`)) return;
+      state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
+      render();
+      const error = await bulkDeleteTable('events');
+      if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
+      Object.keys(cache).forEach(k=>{ if(k.startsWith('events-')) delete cache[k]; });
+      state.bulkResetNotice = '予定を全部削除しました。';
       render();
     });
     document.getElementById('backFromReset').addEventListener('click', ()=>{
@@ -942,9 +1086,38 @@
       `;
     }
 
+    const dayEvents = [...loadEvents(state.viewDate)].sort((a,b)=>{
+      if(a.time && b.time) return a.time < b.time ? -1 : 1;
+      if(a.time && !b.time) return -1;
+      if(!a.time && b.time) return 1;
+      return 0;
+    });
+    const eventsHtml = `
+      <div class="card">
+        <div class="q-label" style="margin-bottom:10px;">📅 ${fmtDateLabel(state.viewDate)}の予定</div>
+        ${dayEvents.length ? dayEvents.map(e=>`
+          <div class="task-row">
+            <div style="width:6px; border-radius:3px; background:var(--purple); align-self:stretch; flex:0 0 auto;"></div>
+            <div class="task-body">
+              <div class="task-name">${e.name}</div>
+              ${e.time ? `<div class="task-meta"><span class="task-badge">${e.time}〜</span></div>` : ''}
+            </div>
+            <div class="task-actions">
+              <button data-eedit="${e.id}">編集</button>
+              <button data-edel="${e.id}">削除</button>
+            </div>
+          </div>
+        `).join('') : `<div class="empty-note">この日の予定はまだ登録されていません。</div>`}
+        <div class="btn-row" style="margin-top:12px;">
+          <button class="btn btn-ghost" id="addEventBtn" style="width:100%;">＋ 予定を追加</button>
+        </div>
+      </div>
+    `;
+
     wizard.innerHTML = `
       ${dateNavHtml}
       ${alertHtml}
+      ${eventsHtml}
       <div class="card">
         <div class="progress-bar-wrap"><span>進み具合</span><b>${doneCount}/${total}</b></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%;"></div></div>
@@ -1048,6 +1221,216 @@
         state.dayPickerOpen = false;
         render();
       });
+    });
+    document.getElementById('addEventBtn').addEventListener('click', ()=>{
+      state.editingEventId = null;
+      state.formEventName = ''; state.formEventTime = ''; state.formEventDate = state.viewDate;
+      state.eventReturnScreen = state.screen;
+      state.screen = 'add-event';
+      render();
+    });
+    wizard.querySelectorAll('[data-eedit]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const ev = loadEvents(state.viewDate).find(x=>String(x.id)===btn.dataset.eedit);
+        if(!ev) return;
+        state.editingEventId = ev.id;
+        state.formEventName = ev.name; state.formEventTime = ev.time || ''; state.formEventDate = state.viewDate;
+        state.eventReturnScreen = state.screen;
+        state.screen = 'add-event';
+        render();
+      });
+    });
+    wizard.querySelectorAll('[data-edel]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const list = loadEvents(state.viewDate).filter(x=>String(x.id)!==btn.dataset.edel);
+        saveEvents(state.viewDate, list);
+        render();
+      });
+    });
+  }
+
+  // --- Import events screen ---
+  function renderImportEvents(){
+    if(state.importBusy){
+      wizard.innerHTML = `<div class="empty-note">読み込み中…</div>`;
+      return;
+    }
+    const hasRows = state.importRows && state.importRows.length;
+    const uploadHtml = !hasRows ? `
+      <div class="card">
+        <div class="q-label" style="margin-bottom:8px;">Excel / CSVから読み込む</div>
+        <div class="q-hint" style="margin-bottom:12px;">「日付」「予定名」「時刻（任意）」の列があるファイルに対応しています。列名は多少違っていても自動で判定を試みます。</div>
+        <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv">
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <div class="q-label" style="margin-bottom:8px;">PDFから読み込む（試験的）</div>
+        <div class="q-hint" style="margin-bottom:12px;">日付が明記された表形式・リスト形式のPDFで動作します。カレンダー画像のような複雑なレイアウトのPDFはうまく読み取れないことがあります。読み取り後に必ず内容を確認・修正してください。</div>
+        <input type="file" id="pdfFileInput" accept=".pdf">
+      </div>
+      ${state.importError ? `<div class="sched-unfit" style="margin-top:14px;">${state.importError}</div>` : ''}
+      <div class="btn-row"><button class="btn btn-ghost" id="backFromImport">月間ビューに戻る</button></div>
+    ` : '';
+
+    const previewHtml = hasRows ? `
+      <div class="card">
+        <div class="q-label" style="margin-bottom:4px;">読み取り結果（${state.importRows.length}件）</div>
+        <div class="q-hint" style="margin-bottom:12px;">内容を確認し、必要なら修正・削除してから登録してください。</div>
+        ${state.importRows.map((r,i)=>`
+          <div class="busy-row" style="align-items:flex-start;">
+            <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+              <input type="date" data-prowdate="${i}" value="${r.date}">
+              <input type="text" data-prowname="${i}" value="${r.name}" placeholder="予定名">
+              <input type="time" data-prowtime="${i}" value="${r.time || ''}">
+            </div>
+            <button data-prowrm="${i}">削除</button>
+          </div>
+        `).join('')}
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="cancelImportBtn">キャンセル</button>
+        <button class="btn btn-primary" id="confirmImportBtn">この内容で登録する（${state.importRows.length}件）</button>
+      </div>
+    ` : '';
+
+    wizard.innerHTML = uploadHtml + previewHtml;
+
+    const excelInput = document.getElementById('excelFileInput');
+    if(excelInput) excelInput.addEventListener('change', async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      state.importBusy = true; state.importError = ''; render();
+      try{
+        const rows = await parseExcelFile(file);
+        if(!rows.length){ state.importError = '予定を読み取れませんでした。列名（日付・予定名など）を確認してください。'; }
+        state.importRows = rows;
+      } catch(err){
+        state.importError = (err && err.message) ? err.message : '読み込みに失敗しました。';
+      }
+      state.importBusy = false;
+      render();
+    });
+    const pdfInput = document.getElementById('pdfFileInput');
+    if(pdfInput) pdfInput.addEventListener('change', async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      state.importBusy = true; state.importError = ''; render();
+      try{
+        const rows = await parsePdfFile(file);
+        if(!rows.length){ state.importError = 'このPDFからは予定を読み取れませんでした。日付が明記された表形式・リスト形式のPDFであれば読み取れる可能性があります。'; }
+        state.importRows = rows;
+      } catch(err){
+        state.importError = (err && err.message) ? err.message : '読み込みに失敗しました。';
+      }
+      state.importBusy = false;
+      render();
+    });
+    const backBtn = document.getElementById('backFromImport');
+    if(backBtn) backBtn.addEventListener('click', ()=>{ state.screen = 'month'; render(); });
+
+    wizard.querySelectorAll('[data-prowdate]').forEach(el=>{
+      el.addEventListener('input', ()=>{ state.importRows[Number(el.dataset.prowdate)].date = el.value; });
+    });
+    wizard.querySelectorAll('[data-prowname]').forEach(el=>{
+      el.addEventListener('input', ()=>{ state.importRows[Number(el.dataset.prowname)].name = el.value; });
+    });
+    wizard.querySelectorAll('[data-prowtime]').forEach(el=>{
+      el.addEventListener('input', ()=>{ state.importRows[Number(el.dataset.prowtime)].time = el.value; });
+    });
+    wizard.querySelectorAll('[data-prowrm]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        state.importRows.splice(Number(btn.dataset.prowrm), 1);
+        render();
+      });
+    });
+    const cancelBtn = document.getElementById('cancelImportBtn');
+    if(cancelBtn) cancelBtn.addEventListener('click', ()=>{
+      state.importRows = null; state.importError = '';
+      render();
+    });
+    const confirmBtn = document.getElementById('confirmImportBtn');
+    if(confirmBtn) confirmBtn.addEventListener('click', ()=>{
+      const validRows = state.importRows.filter(r=>r.date && r.name.trim());
+      const byDate = {};
+      validRows.forEach(r=>{
+        if(!byDate[r.date]) byDate[r.date] = [];
+        byDate[r.date].push(r);
+      });
+      Object.keys(byDate).forEach(dateStr=>{
+        const list = loadEvents(dateStr);
+        byDate[dateStr].forEach(r=>{
+          list.push({ id: crypto.randomUUID(), name: r.name.trim(), time: r.time || '' });
+        });
+        saveEvents(dateStr, list);
+      });
+      state.importRows = null; state.importError = '';
+      state.screen = 'month';
+      render();
+    });
+  }
+
+  // --- Add/Edit event screen ---
+  function renderAddEvent(){
+    wizard.innerHTML = `
+      <div class="card">
+        <div class="field">
+          <label class="field-label">日付</label>
+          <input type="date" id="eventDate" value="${state.formEventDate}">
+        </div>
+        <div class="field">
+          <label class="field-label">予定名</label>
+          <input type="text" id="eventName" placeholder="例：職員会議" value="${state.formEventName}">
+        </div>
+        <div class="field">
+          <label class="field-label">時刻（任意）</label>
+          <input type="time" id="eventTime" value="${state.formEventTime}">
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" id="cancelEventBtn">キャンセル</button>
+          <button class="btn btn-primary" id="saveEventBtn" ${state.formEventName.trim() ? '' : 'disabled'}>保存する</button>
+        </div>
+        ${state.editingEventId ? `<div class="btn-row"><button class="btn btn-ghost" id="deleteEventBtn" style="color:var(--danger);">この予定を削除</button></div>` : ''}
+      </div>
+    `;
+    const nameEl = document.getElementById('eventName');
+    const dateEl = document.getElementById('eventDate');
+    const timeEl = document.getElementById('eventTime');
+    const saveBtn = document.getElementById('saveEventBtn');
+    nameEl.addEventListener('input', ()=>{ state.formEventName = nameEl.value; saveBtn.disabled = !state.formEventName.trim(); });
+    dateEl.addEventListener('input', ()=>{ state.formEventDate = dateEl.value; });
+    timeEl.addEventListener('input', ()=>{ state.formEventTime = timeEl.value; });
+    document.getElementById('cancelEventBtn').addEventListener('click', ()=>{ state.screen = state.eventReturnScreen; render(); });
+    saveBtn.addEventListener('click', ()=>{
+      const targetDate = state.formEventDate || state.viewDate;
+      if(state.editingEventId){
+        // if the date changed, move it: remove from old date's list, add to new date's list
+        const oldDate = state.viewDate;
+        if(targetDate !== oldDate){
+          const oldList = loadEvents(oldDate).filter(x=>String(x.id)!==state.editingEventId);
+          saveEvents(oldDate, oldList);
+          const newList = loadEvents(targetDate);
+          newList.push({ id: state.editingEventId, name: state.formEventName.trim(), time: state.formEventTime || '' });
+          saveEvents(targetDate, newList);
+        } else {
+          const list = loadEvents(targetDate);
+          const ev = list.find(x=>String(x.id)===state.editingEventId);
+          if(ev){ ev.name = state.formEventName.trim(); ev.time = state.formEventTime || ''; }
+          saveEvents(targetDate, list);
+        }
+      } else {
+        const list = loadEvents(targetDate);
+        list.push({ id: crypto.randomUUID(), name: state.formEventName.trim(), time: state.formEventTime || '' });
+        saveEvents(targetDate, list);
+      }
+      state.viewDate = targetDate;
+      state.screen = state.eventReturnScreen;
+      render();
+    });
+    const delBtn = document.getElementById('deleteEventBtn');
+    if(delBtn) delBtn.addEventListener('click', ()=>{
+      const list = loadEvents(state.viewDate).filter(x=>String(x.id)!==state.editingEventId);
+      saveEvents(state.viewDate, list);
+      state.screen = state.eventReturnScreen;
+      render();
     });
   }
 
@@ -1656,12 +2039,14 @@
     let totalTasks = 0, totalDone = 0, daysWithTasks = 0, daysAllDone = 0;
     const dayStats = [];
     const dayTasksThisMonth = [];
+    const eventsThisMonth = [];
     for(let d=1; d<=numDays; d++){
       const ds = monthDateStr(year, month, d);
       const tasks = loadTasks(ds);
       const done = tasks.filter(t=>t.done).length;
       dayStats.push({ day:d, dateStr:ds, total:tasks.length, done });
       tasks.forEach(t=> dayTasksThisMonth.push({ ...t, dateStr: ds }));
+      loadEvents(ds).forEach(e=> eventsThisMonth.push({ ...e, dateStr: ds }));
       if(tasks.length){
         daysWithTasks++;
         totalTasks += tasks.length;
@@ -1701,6 +2086,23 @@
         </div>
       </div>
     `).join('') : `<div class="empty-note">今月、日付を指定して登録された業務はありません。</div>`;
+
+    const sortedEvents = [...eventsThisMonth].sort((a,b)=>{
+      if(a.dateStr !== b.dateStr) return a.dateStr < b.dateStr ? -1 : 1;
+      if(a.time && b.time) return a.time < b.time ? -1 : 1;
+      if(a.time && !b.time) return -1;
+      if(!a.time && b.time) return 1;
+      return 0;
+    });
+    const monthEventRowsHtml = sortedEvents.length ? sortedEvents.map(e=>`
+      <div class="task-row" data-jumpdate="${e.dateStr}" style="cursor:pointer;">
+        <div style="width:6px; border-radius:3px; background:var(--purple); align-self:stretch; flex:0 0 auto;"></div>
+        <div class="task-body">
+          <div class="task-name">${e.name}</div>
+          <div class="task-meta"><span class="task-badge">${fmtDateLabel(e.dateStr)}</span>${e.time ? `<span class="task-badge">${e.time}〜</span>` : ''}</div>
+        </div>
+      </div>
+    `).join('') : `<div class="empty-note">今月の予定はまだ登録されていません。</div>`;
 
     const dowLabels = ['日','月','火','水','木','金','土'].map(d=>`<div class="month-dow">${d}</div>`).join('');
     const blanks = Array.from({length:firstDow}).map(()=>`<div class="month-cell empty"></div>`).join('');
@@ -1754,6 +2156,13 @@
         <button class="nav-btn" id="goMonthSchedule" style="flex:none; width:100%;"><span class="nav-icon">🗓️</span>今月のスケジュールを組む</button>
       </div>
       <button class="friend-link" id="goRecurringManage">🔁 毎月の業務を管理</button>
+
+      <div class="q-label" style="margin-top:26px; margin-bottom:6px;">📅 今月の予定</div>
+      <div class="card">${monthEventRowsHtml}</div>
+      <div class="nav-btn-row">
+        <button class="nav-btn" id="addEventFromMonthBtn"><span class="nav-icon">✏️</span>手動で追加</button>
+        <button class="nav-btn" id="goImportEvents"><span class="nav-icon">📥</span>読み込みで追加</button>
+      </div>
 
       <div class="q-label" style="margin-top:26px; margin-bottom:6px;">日付を指定して登録された今月の業務</div>
       <div class="q-hint" style="margin-bottom:12px;">「今日の業務」から登録した、今月の各日の業務です。タップするとその日に移動します。</div>
@@ -1845,6 +2254,19 @@
     });
     document.getElementById('goRecurringManage').addEventListener('click', ()=>{
       state.screen = 'recurring-manage';
+      render();
+    });
+    document.getElementById('addEventFromMonthBtn').addEventListener('click', ()=>{
+      state.editingEventId = null;
+      state.formEventName = ''; state.formEventTime = '';
+      state.formEventDate = monthDateStr(year, month, 1);
+      state.eventReturnScreen = 'month';
+      state.screen = 'add-event';
+      render();
+    });
+    document.getElementById('goImportEvents').addEventListener('click', ()=>{
+      state.importRows = null; state.importError = ''; state.importBusy = false;
+      state.screen = 'import-events';
       render();
     });
     wizard.querySelectorAll('[data-jumpdate]').forEach(row=>{

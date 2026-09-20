@@ -191,7 +191,7 @@
   function loadMonthTasks(year, month){ return loadTasksByKey(monthTasksKey(year, month)); }
   function saveMonthTasks(year, month, tasks){ saveTasksByKey(monthTasksKey(year, month), tasks); }
 
-  function loadTasksByKey(key){ return cache[key] || []; }
+  function loadTasksByKey(key){ return (cache[key] || []).slice(); }
   function deleteDayTasksByMonthTaskId(monthTaskId){
     Object.keys(cache).forEach(key=>{
       if(!key.startsWith('tasks-')) return;
@@ -1328,7 +1328,8 @@
 
   // --- Monthly schedule builder: fit "this month" tasks onto specific days ---
   function computeMonthSchedule(year, month, deadlineDateStr, minPerDay, skipWeekends, excludeDays){
-    const monthTasks = loadMonthTasks(year, month).filter(t => !t.done && !t.scheduled);
+    const monthTasks = loadMonthTasks(year, month).filter(t => !t.done);
+    const reschedulingIds = new Set(monthTasks.filter(t => t.scheduled).map(t => t.id));
     const todayD = todayStr();
     const numDays = daysInMonth(year, month);
     const excludeSet = new Set(excludeDays || []);
@@ -1342,7 +1343,7 @@
       if(excludeSet.has(ds)) continue;
       const dow = new Date(year, month, d).getDay();
       if(skipWeekends && (dow === 0 || dow === 6)) continue;
-      const dayTasks = loadTasks(ds).filter(t => !t.done);
+      const dayTasks = loadTasks(ds).filter(t => !t.done && !(t.monthTaskId && reschedulingIds.has(t.monthTaskId)));
       const used = dayTasks.reduce((sum,t)=> sum + t.min, 0);
       candidates.push({ dateStr: ds, remaining: Math.max(0, minPerDay - used) });
     }
@@ -1522,7 +1523,7 @@
         <div class="q-label" style="font-weight:900; margin-bottom:12px;">${fmtDateLabel(state.monthSchedDeadline)} までのおすすめスケジュール</div>
         ${rowsHtml}
         ${unfitHtml}
-        <div class="sched-busy-note">1つの業務が1日で収まらない場合は、複数日に分けて割り振ります。「登録する」を押すと、それぞれの日の業務一覧に追加されます。完全に割り振れた業務は今月の業務リストから外れ、一部だけ割り振れた業務は残り分だけ月間リストに残ります。</div>
+        <div class="sched-busy-note">1つの業務が1日で収まらない場合は、複数日に分けて割り振ります。「登録する」を押すと、それぞれの日の業務一覧に追加されます。完全に割り振れた業務は「配分済み」として今月の業務リストに残り、一部だけ割り振れた業務は残り分だけリストに残ります。すでに配分済みの業務も、もう一度スケジュールを組み直すと、古い配分先を消して新しく配分し直します。</div>
       </div>
       <div class="btn-row">
         <button class="btn btn-ghost" id="editMonthConditions">条件を変える</button>
@@ -1537,6 +1538,14 @@
     document.getElementById('applyMonthSchedule').addEventListener('click', ()=>{
       const { year, month } = state.monthCursor;
       const monthList = loadMonthTasks(year, month);
+
+      // for tasks that were already scheduled before (being re-scheduled now), clear out
+      // their old day-task copies first so re-running the scheduler doesn't leave duplicates
+      const placedTaskIds = new Set(r.placed.map(item => String(item.task.id)));
+      placedTaskIds.forEach(id=>{
+        const existing = monthList.find(t => String(t.id) === id);
+        if(existing && existing.scheduled) deleteDayTasksByMonthTaskId(existing.id);
+      });
 
       // add each scheduled chunk to its day's task list
       r.placed.forEach(item=>{
@@ -1553,8 +1562,9 @@
         scheduledByTaskId[key] = (scheduledByTaskId[key] || 0) + item.min;
       });
 
-      // fully-scheduled tasks stay in the list (flagged so they aren't re-scheduled next time);
-      // partially-scheduled tasks shrink to just their remaining, still-unscheduled minutes
+      // fully-scheduled tasks stay in the list, flagged as scheduled (they can still be
+      // re-scheduled again later, which will replace this allocation); partially-scheduled
+      // tasks shrink to just their remaining, still-unscheduled minutes
       const updatedMonthList = [];
       monthList.forEach(t=>{
         const scheduled = scheduledByTaskId[String(t.id)] || 0;

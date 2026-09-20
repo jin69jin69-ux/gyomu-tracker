@@ -615,13 +615,23 @@
       render();
     });
     document.getElementById('resetDayTasks').addEventListener('click', async ()=>{
-      if(!confirm(`本当に、日付ごとの業務を全部（${dayCount}件）削除しますか？この操作は元に戻せません。`)) return;
+      if(!confirm(`本当に、日付ごとの業務を全部（${dayCount}件）削除しますか？この操作は元に戻せません。\n（月間業務の「配分済み」も解除され、また配分し直せるようになります）`)) return;
       state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
       render();
       const error = await bulkDeleteTable('tasks');
       if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
       Object.keys(cache).forEach(k=>{ if(k.startsWith('tasks-')) delete cache[k]; });
-      state.bulkResetNotice = '日付ごとの業務を全部削除しました。';
+      // day-task copies made by "今月のスケジュールを組む" are gone now, so un-flag their
+      // source month tasks as "scheduled" too, otherwise they'd be stuck unable to be
+      // reallocated even though nothing is actually scheduled for them anymore.
+      const unflagError = await sb.from('month_tasks').update({ scheduled: false }).eq('user_id', currentUserId);
+      if(!unflagError.error){
+        Object.keys(cache).forEach(k=>{
+          if(!k.startsWith('month-tasks-')) return;
+          (cache[k] || []).forEach(t=>{ if(t.scheduled) t.scheduled = false; });
+        });
+      }
+      state.bulkResetNotice = '日付ごとの業務を全部削除しました（配分済みの状態も解除しました）。';
       render();
     });
     document.getElementById('resetMonthTasks').addEventListener('click', async ()=>{
@@ -1609,6 +1619,7 @@
         </div>
         <div class="task-actions">
           <button data-medit="${t.id}">編集</button>
+          ${t.scheduled ? `<button data-munsched="${t.id}">配分解除</button>` : ''}
           <button data-mdel="${t.id}">削除</button>
         </div>
       </div>
@@ -1732,6 +1743,17 @@
         renderMonth();
       });
     });
+    wizard.querySelectorAll('[data-munsched]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.munsched;
+        const list = loadMonthTasks(year, month);
+        const target = list.find(x=>String(x.id)===id);
+        if(target) target.scheduled = false;
+        saveMonthTasks(year, month, list);
+        deleteDayTasksByMonthTaskId(id);
+        renderMonth();
+      });
+    });
     document.getElementById('addMonthTaskBtn').addEventListener('click', ()=>{
       state.editingTaskId = null;
       state.formName = ''; state.formMin = 30; state.formTimeOn = false; state.formTime = ''; state.formDeadline = ''; state.formRecurring = false; state.formDeadlineDay = ''; state.formError = '';
@@ -1744,9 +1766,12 @@
       render();
     });
     document.getElementById('goMonthSchedule').addEventListener('click', ()=>{
-      if(!state.monthSchedDeadline){
+      const viewedYm = year + '-' + String(month+1).padStart(2,'0');
+      const deadlineYm = state.monthSchedDeadline ? state.monthSchedDeadline.slice(0,7) : '';
+      if(!state.monthSchedDeadline || deadlineYm !== viewedYm){
         const lastDay = daysInMonth(year, month);
         state.monthSchedDeadline = monthDateStr(year, month, lastDay);
+        state.monthSchedExcludeDays = [];
       }
       state.monthSchedResult = null;
       state.screen = 'month-schedule';

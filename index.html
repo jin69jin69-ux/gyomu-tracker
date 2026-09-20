@@ -560,6 +560,7 @@
     const dayCount = countCacheByPrefix('tasks-');
     const monthCount = countCacheByPrefix('month-tasks-');
     const recurCount = (state.recurringTemplates || []).length;
+    const schedCount = Object.keys(schedCache || {}).length;
 
     wizard.innerHTML = `
       <div class="card">
@@ -576,6 +577,11 @@
         <div class="q-label" style="font-weight:900; margin-bottom:4px;">毎月繰り返す設定（テンプレート）</div>
         <div class="q-hint" style="margin-bottom:10px;">現在 ${recurCount} 件登録されています。重複して作られてしまった場合は、ここでまとめて削除できます。</div>
         <button class="btn btn-ghost" id="resetRecurring" style="width:100%; color:var(--danger); border-color:var(--danger);">毎月繰り返す設定を全部削除</button>
+      </div>
+      <div class="card">
+        <div class="q-label" style="font-weight:900; margin-bottom:4px;">スケジュール設定（期限時刻・動けない時間帯）</div>
+        <div class="q-hint" style="margin-bottom:10px;">現在 ${schedCount} 日分、保存されています。「今日のスケジュールを組む」で入力した期限時刻・動けない時間帯だけをリセットします（業務自体は消えません）。</div>
+        <button class="btn btn-ghost" id="resetSchedSettings" style="width:100%; color:var(--danger); border-color:var(--danger);">スケジュール設定を全部削除</button>
       </div>
       <div class="card">
         <div class="q-label" style="font-weight:900; margin-bottom:4px;">指定した期間の月間業務を削除</div>
@@ -639,6 +645,16 @@
       if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
       state.recurringTemplates = [];
       state.bulkResetNotice = '毎月繰り返す設定を全部削除しました。';
+      render();
+    });
+    document.getElementById('resetSchedSettings').addEventListener('click', async ()=>{
+      if(!confirm(`本当に、スケジュール設定を全部（${schedCount}日分）削除しますか？この操作は元に戻せません。（業務自体は消えません）`)) return;
+      state.bulkResetError = ''; state.bulkResetNotice = '削除中…';
+      render();
+      const error = await bulkDeleteTable('sched_settings');
+      if(error){ state.bulkResetError = '削除に失敗しました: ' + (error.message || JSON.stringify(error)); state.bulkResetNotice = ''; render(); return; }
+      schedCache = {};
+      state.bulkResetNotice = 'スケジュール設定を全部削除しました。';
       render();
     });
     document.getElementById('backFromReset').addEventListener('click', ()=>{

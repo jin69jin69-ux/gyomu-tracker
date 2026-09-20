@@ -98,6 +98,12 @@
   .nav-btn:active{ background:var(--input-bg); }
 
   .month-nav{ display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  .month-picker-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .month-picker-cell{
+    padding:12px 4px; border-radius:9px; border:1px solid var(--line); background:var(--input-bg);
+    color:var(--ink); font-family:'Zen Kaku Gothic New', sans-serif; font-size:13px; font-weight:700; cursor:pointer;
+  }
+  .month-picker-cell.active{ background:var(--amber); color:#101B33; border-color:var(--amber); }
   .month-nav button{ border:none; background:var(--card); border:1px solid var(--line); width:34px; height:34px; border-radius:8px; font-size:15px; cursor:pointer; }
   .month-nav .label{ font-weight:900; font-size:16px; }
   .month-stats{ display:flex; justify-content:space-around; text-align:center; margin-bottom:16px; }
@@ -329,7 +335,8 @@
     const inRangeTemplates = templates.filter(templateInRange);
     if(!inRangeTemplates.length) return changed;
     const existingRecurIds = new Set(existing.map(t => t.recurringId).filter(Boolean));
-    const missing = inRangeTemplates.filter(t => !existingRecurIds.has(t.id));
+    const skip = state.recurringSkip || new Set();
+    const missing = inRangeTemplates.filter(t => !existingRecurIds.has(t.id) && !skip.has(t.id + '::' + ym));
     if(!missing.length) return changed;
     if(!currentUserId){ state.recurringSyncError = 'ログイン情報が見つかりませんでした（currentUserId未設定）。'; return changed; }
     const numDays = daysInMonth(year, month);
@@ -375,6 +382,7 @@
     monthSchedExcludeDays: [],
     bulkResetNotice: '', bulkResetError: '',
     bulkRangeStart: '', bulkRangeEnd: '',
+    monthPickerOpen: false, monthPickerYear: null,
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
@@ -442,7 +450,7 @@
     lsSet('current-user-id', null);
     lsSet('current-username', null);
     cache = {}; schedCache = {};
-    state.recurringCheckedMonths = null;
+    state.recurringSkip = null;
     state.screen = 'auth';
     render();
   });
@@ -710,7 +718,7 @@
         currentUserId = userId;
         lsSet('current-user-id', userId);
         lsSet('current-username', username);
-        state.recurringCheckedMonths = null;
+        state.recurringSkip = null;
         await loadAllFromSupabase();
         state.authBusy = false;
         state.authPassword = '';
@@ -799,7 +807,7 @@
           if(error){ state.adminNotice = ''; state.adminError2 = `${name} さんのリセットに失敗しました（${table}）: ` + (error.message || JSON.stringify(error)); render(); return; }
         }
         // if this admin happens to be resetting the currently-logged-in account in this browser, clear its local cache too
-        if(id === currentUserId){ cache = {}; schedCache = {}; state.recurringTemplates = []; state.recurringCheckedMonths = null; }
+        if(id === currentUserId){ cache = {}; schedCache = {}; state.recurringTemplates = []; state.recurringSkip = null; }
         state.adminNotice = `${name} さんのアカウントデータを全部リセットしました。`;
         render();
       });
@@ -1527,14 +1535,9 @@
 
   function renderMonth(){
     const { year, month } = state.monthCursor;
-    const ym = year + '-' + String(month+1).padStart(2,'0');
-    if(!state.recurringCheckedMonths) state.recurringCheckedMonths = new Set();
-    if(!state.recurringCheckedMonths.has(ym)){
-      state.recurringCheckedMonths.add(ym);
-      ensureRecurringTasksForMonth(year, month).then(changed=>{
-        if(changed && state.screen === 'month' && state.monthCursor.year === year && state.monthCursor.month === month) render();
-      });
-    }
+    ensureRecurringTasksForMonth(year, month).then(changed=>{
+      if(changed && state.screen === 'month' && state.monthCursor.year === year && state.monthCursor.month === month) render();
+    });
     const numDays = daysInMonth(year, month);
     const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
     const today = todayStr();
@@ -1603,13 +1606,29 @@
       </div>`;
     }).join('');
 
+    const monthPickerHtml = state.monthPickerOpen ? `
+      <div class="card" style="margin-bottom:14px;">
+        <div class="month-nav" style="margin-bottom:12px;">
+          <button id="pickerPrevYear">◀</button>
+          <div class="label">${state.monthPickerYear}年</div>
+          <button id="pickerNextYear">▶</button>
+        </div>
+        <div class="month-picker-grid">
+          ${Array.from({length:12}).map((_,i)=>`
+            <button class="month-picker-cell ${(state.monthPickerYear===year && i===month) ? 'active' : ''}" data-pickmonth="${i}">${i+1}月</button>
+          `).join('')}
+        </div>
+      </div>
+    ` : '';
+
     wizard.innerHTML = `
       ${state.recurringSyncError ? `<div class="sched-unfit">${state.recurringSyncError}</div>` : ''}
       <div class="month-nav">
         <button id="prevMonth">◀</button>
-        <div class="label">${year}年${month+1}月</div>
+        <div class="label" id="monthLabel" style="cursor:pointer;">${year}年${month+1}月 ▾</div>
         <button id="nextMonth">▶</button>
       </div>
+      ${monthPickerHtml}
 
       <div class="card">
         <div class="progress-bar-wrap"><span>${month+1}月中にやる業務</span><b>${monthDone}/${monthTotal}</b></div>
@@ -1666,9 +1685,15 @@
     wizard.querySelectorAll('[data-mdel]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const id = btn.dataset.mdel;
-        const list = loadMonthTasks(year, month).filter(x=>String(x.id)!==id);
+        const fullList = loadMonthTasks(year, month);
+        const target = fullList.find(x=>String(x.id)===id);
+        const list = fullList.filter(x=>String(x.id)!==id);
         saveMonthTasks(year, month, list);
         deleteDayTasksByMonthTaskId(id);
+        if(target && target.recurringId){
+          if(!state.recurringSkip) state.recurringSkip = new Set();
+          state.recurringSkip.add(target.recurringId + '::' + year + '-' + String(month+1).padStart(2,'0'));
+        }
         renderMonth();
       });
     });
@@ -1707,13 +1732,31 @@
       let { year, month } = state.monthCursor;
       month--; if(month < 0){ month = 11; year--; }
       state.monthCursor = { year, month };
+      state.monthPickerOpen = false;
       render();
     });
     document.getElementById('nextMonth').addEventListener('click', ()=>{
       let { year, month } = state.monthCursor;
       month++; if(month > 11){ month = 0; year++; }
       state.monthCursor = { year, month };
+      state.monthPickerOpen = false;
       render();
+    });
+    document.getElementById('monthLabel').addEventListener('click', ()=>{
+      if(!state.monthPickerOpen) state.monthPickerYear = year;
+      state.monthPickerOpen = !state.monthPickerOpen;
+      render();
+    });
+    const pickerPrevYear = document.getElementById('pickerPrevYear');
+    if(pickerPrevYear) pickerPrevYear.addEventListener('click', ()=>{ state.monthPickerYear--; render(); });
+    const pickerNextYear = document.getElementById('pickerNextYear');
+    if(pickerNextYear) pickerNextYear.addEventListener('click', ()=>{ state.monthPickerYear++; render(); });
+    wizard.querySelectorAll('[data-pickmonth]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        state.monthCursor = { year: state.monthPickerYear, month: Number(btn.dataset.pickmonth) };
+        state.monthPickerOpen = false;
+        render();
+      });
     });
     wizard.querySelectorAll('.month-cell[data-date]').forEach(cell=>{
       cell.addEventListener('click', ()=>{

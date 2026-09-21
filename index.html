@@ -422,11 +422,11 @@
   async function loadAllFromSupabase(){
     cache = {}; schedCache = {};
     const [{ data: taskRows }, { data: monthRows }, { data: schedRows }, { data: recurRows }, { data: eventRows }] = await Promise.all([
-      sb.from('tasks').select('*'),
-      sb.from('month_tasks').select('*'),
-      sb.from('sched_settings').select('*'),
-      sb.from('recurring_month_tasks').select('*'),
-      sb.from('events').select('*'),
+      sb.from('tasks').select('*').eq('user_id', currentUserId),
+      sb.from('month_tasks').select('*').eq('user_id', currentUserId),
+      sb.from('sched_settings').select('*').eq('user_id', currentUserId),
+      sb.from('recurring_month_tasks').select('*').eq('user_id', currentUserId),
+      sb.from('events').select('*').eq('user_id', currentUserId),
     ]);
     (taskRows||[]).forEach(r=>{
       const key = tasksKey(r.date);
@@ -1906,7 +1906,7 @@
   // --- Recurring monthly task templates ---
   async function renderRecurringManage(){
     wizard.innerHTML = `<div class="empty-note">読み込み中…</div>`;
-    const { data, error } = await sb.from('recurring_month_tasks').select('*').order('name');
+    const { data, error } = await sb.from('recurring_month_tasks').select('*').eq('user_id', currentUserId).order('name');
     if(state.screen !== 'recurring-manage') return; // navigated away while loading
     if(error){
       wizard.innerHTML = `

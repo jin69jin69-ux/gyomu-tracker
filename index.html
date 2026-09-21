@@ -256,6 +256,60 @@
     });
     return results;
   }
+  // "年間行事予定表" style grid-calendar: months laid out across columns, day-of-month
+  // down the rows, with the event text in the column right after each month's weekday
+  // column. Detects month header cells like "4月"/"12月" and reconstructs dates from
+  // their column/row position rather than reading any date text directly.
+  async function parseGridCalendarExcel(file, startYear){
+    await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    let bestResults = [];
+    wb.SheetNames.forEach(sheetName=>{
+      const sheet = wb.Sheets[sheetName];
+      if(!sheet['!ref']) return;
+      const range = XLSX.utils.decode_range(sheet['!ref']);
+      let headerRow = -1, monthCols = [];
+      for(let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 10); r++){
+        const found = [];
+        for(let c = range.s.c; c <= range.e.c; c++){
+          const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+          if(cell && typeof cell.v === 'string'){
+            const m = cell.v.trim().match(/^(\d{1,2})月$/);
+            if(m) found.push({ col: c, month: Number(m[1]) });
+          }
+        }
+        if(found.length >= 4){ headerRow = r; monthCols = found; break; }
+      }
+      if(headerRow === -1) return;
+      monthCols.sort((a,b)=>a.col - b.col);
+      let currentYear = startYear, prevMonth = null;
+      const monthYear = {};
+      monthCols.forEach(({month})=>{
+        if(prevMonth !== null && month < prevMonth) currentYear++;
+        monthYear[month] = currentYear;
+        prevMonth = month;
+      });
+      const results = [];
+      monthCols.forEach(({col, month})=>{
+        const year = monthYear[month];
+        const eventCol = col + 1;
+        const numDays = new Date(year, month, 0).getDate();
+        for(let day = 1; day <= numDays; day++){
+          const r = headerRow + day;
+          const cell = sheet[XLSX.utils.encode_cell({ r, c: eventCol })];
+          if(cell && cell.v){
+            String(cell.v).split('\n').forEach(line=>{
+              line = line.trim();
+              if(line) results.push({ date: `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`, name: line, time: '' });
+            });
+          }
+        }
+      });
+      if(results.length > bestResults.length) bestResults = results;
+    });
+    return bestResults;
+  }
   async function parsePdfFile(file){
     await loadScriptOnce('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js');
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
@@ -501,7 +555,7 @@
     monthPickerOpen: false, monthPickerYear: null,
     dayPickerOpen: false, dayPickerYear: null, dayPickerMonth: null,
     editingEventId: null, formEventName: '', formEventTime: '', formEventDate: '', eventReturnScreen: 'today',
-    importRows: null, importError: '', importBusy: false,
+    importRows: null, importError: '', importBusy: false, gridImportYear: null,
     monthSchedResult: null,
     authMode: 'login',   // 'login' | 'signup'
     authEmail: '', authPassword: '', authError: '', authBusy: false, authNotice: '',
@@ -1256,11 +1310,21 @@
       return;
     }
     const hasRows = state.importRows && state.importRows.length;
+    if(!state.gridImportYear) state.gridImportYear = new Date().getFullYear();
     const uploadHtml = !hasRows ? `
       <div class="card">
         <div class="q-label" style="margin-bottom:8px;">Excel / CSVから読み込む</div>
         <div class="q-hint" style="margin-bottom:12px;">「日付」「予定名」「時刻（任意）」の列があるファイルに対応しています。列名は多少違っていても自動で判定を試みます。</div>
         <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv">
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <div class="q-label" style="margin-bottom:8px;">年間行事予定表（グリッド形式）から読み込む</div>
+        <div class="q-hint" style="margin-bottom:12px;">月ごとに列が並び、日付ごとに行が並ぶカレンダー形式のExcelに対応しています。セルの位置から日付を判定するため、日付の文字そのものは書かれていなくても読み取れます。</div>
+        <div class="field">
+          <label class="field-label">表の一番左（最初）の月は何年ですか？</label>
+          <input type="number" id="gridYearInput" value="${state.gridImportYear}" min="2020" max="2100">
+        </div>
+        <input type="file" id="gridFileInput" accept=".xlsx,.xls">
       </div>
       <div class="card" style="margin-top:14px;">
         <div class="q-label" style="margin-bottom:8px;">PDFから読み込む（試験的）</div>
@@ -1302,6 +1366,23 @@
       try{
         const rows = await parseExcelFile(file);
         if(!rows.length){ state.importError = '予定を読み取れませんでした。列名（日付・予定名など）を確認してください。'; }
+        state.importRows = rows;
+      } catch(err){
+        state.importError = (err && err.message) ? err.message : '読み込みに失敗しました。';
+      }
+      state.importBusy = false;
+      render();
+    });
+    const gridYearInput = document.getElementById('gridYearInput');
+    if(gridYearInput) gridYearInput.addEventListener('input', ()=>{ state.gridImportYear = Number(gridYearInput.value) || state.gridImportYear; });
+    const gridInput = document.getElementById('gridFileInput');
+    if(gridInput) gridInput.addEventListener('change', async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      state.importBusy = true; state.importError = ''; render();
+      try{
+        const rows = await parseGridCalendarExcel(file, state.gridImportYear);
+        if(!rows.length){ state.importError = 'この形式からは予定を読み取れませんでした。「4月」「12月」のような月の見出しが、表の中に横一列に並んでいる形式に対応しています。'; }
         state.importRows = rows;
       } catch(err){
         state.importError = (err && err.message) ? err.message : '読み込みに失敗しました。';
@@ -2161,7 +2242,7 @@
       <div class="card">${monthEventRowsHtml}</div>
       <div class="nav-btn-row">
         <button class="nav-btn" id="addEventFromMonthBtn"><span class="nav-icon">✏️</span>手動で追加</button>
-        <button class="nav-btn" id="goImportEvents"><span class="nav-icon">📥</span>読み込みで追加</button>
+        <button class="nav-btn" id="goImportEvents"><span class="nav-icon">📥</span>年間予定を読み込む</button>
       </div>
 
       <div class="q-label" style="margin-top:26px; margin-bottom:6px;">日付を指定して登録された今月の業務</div>

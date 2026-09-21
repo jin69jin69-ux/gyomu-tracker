@@ -1429,19 +1429,29 @@
       render();
     });
     const confirmBtn = document.getElementById('confirmImportBtn');
-    if(confirmBtn) confirmBtn.addEventListener('click', ()=>{
+    if(confirmBtn) confirmBtn.addEventListener('click', async ()=>{
       const validRows = state.importRows.filter(r=>r.date && r.name.trim());
-      const byDate = {};
-      validRows.forEach(r=>{
-        if(!byDate[r.date]) byDate[r.date] = [];
-        byDate[r.date].push(r);
-      });
-      Object.keys(byDate).forEach(dateStr=>{
-        const list = loadEvents(dateStr);
-        byDate[dateStr].forEach(r=>{
-          list.push({ id: crypto.randomUUID(), name: r.name.trim(), time: r.time || '' });
-        });
-        saveEvents(dateStr, list);
+      if(!validRows.length) return;
+      confirmBtn.disabled = true; confirmBtn.textContent = '登録中…';
+      const newRows = validRows.map(r=>({
+        id: crypto.randomUUID(),
+        user_id: currentUserId,
+        date: r.date,
+        name: r.name.trim(),
+        time: r.time || '',
+      }));
+      const { error } = await sb.from('events').insert(newRows);
+      if(error){
+        state.importError = '登録に失敗しました: ' + (error.message || JSON.stringify(error));
+        confirmBtn.disabled = false; confirmBtn.textContent = `この内容で登録する（${state.importRows.length}件）`;
+        render();
+        return;
+      }
+      // insert confirmed successful in the database -- now reflect it in the local cache
+      newRows.forEach(r=>{
+        const key = eventsKey(r.date);
+        if(!cache[key]) cache[key] = [];
+        cache[key].push({ id: r.id, name: r.name, time: r.time });
       });
       state.importRows = null; state.importError = '';
       state.screen = 'month';

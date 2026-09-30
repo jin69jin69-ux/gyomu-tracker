@@ -409,6 +409,20 @@
     }
     return { id:item.id, user_id:currentUserId, year:extra.year, month:extra.month, name:item.name, min:item.min, deadline:item.deadline||null, done:!!item.done, recurring_id:item.recurringId||null, scheduled:!!item.scheduled };
   }
+  function wait(ms){ return new Promise(res=>setTimeout(res, ms)); }
+  // Mobile connections (iPhone on cellular/weak wifi in particular) can drop a
+  // single request without that being a real, persistent failure. Retry once
+  // after a short pause before treating it as an actual error, so a brief
+  // blip doesn't surface a "保存に失敗しました" the user then has to retry by hand.
+  async function runWithRetry(fn){
+    const { error } = await fn();
+    if(!error) return null;
+    console.error('sync (1st try)', error);
+    await wait(1200);
+    const { error: error2 } = await fn();
+    if(error2){ console.error('sync (retry)', error2); return error2; }
+    return null;
+  }
   function diffAndSync(key, oldList, newList){
     const info = keyToTableInfo(key);
     if(!info || !currentUserId) return Promise.resolve({ errors: [] });
@@ -417,22 +431,16 @@
     const ops = [];
     oldById.forEach((_, id)=>{
       if(!newIds.has(id)){
-        ops.push(
-          sb.from(info.table).delete().eq('id', id).then(({error})=>{ if(error){ console.error('delete', error); return error; } return null; })
-        );
+        ops.push(runWithRetry(()=> sb.from(info.table).delete().eq('id', id)));
       }
     });
     newList.forEach(t=>{
       const old = oldById.get(String(t.id));
       const row = buildRow(info.table, info.extra, t);
       if(!old){
-        ops.push(
-          sb.from(info.table).insert(row).then(({error})=>{ if(error){ console.error('insert', error); return error; } return null; })
-        );
+        ops.push(runWithRetry(()=> sb.from(info.table).insert(row)));
       } else if(old.name!==t.name || old.min!==t.min || old.time!==t.time || old.deadline!==t.deadline || !!old.done!==!!t.done || !!old.scheduled!==!!t.scheduled){
-        ops.push(
-          sb.from(info.table).update(row).eq('id', t.id).then(({error})=>{ if(error){ console.error('update', error); return error; } return null; })
-        );
+        ops.push(runWithRetry(()=> sb.from(info.table).update(row).eq('id', t.id)));
       }
     });
     // Wait for every insert/update/delete to actually reach the server before

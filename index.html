@@ -360,10 +360,21 @@
       }
     });
   }
+  // Awaits a saveTasksByKey()/diffAndSync() result and throws if any of the
+  // underlying Supabase requests failed, so callers can show an error instead
+  // of silently navigating away as if the save succeeded.
+  async function mustSync(syncPromise){
+    const result = await syncPromise;
+    if(result && result.errors && result.errors.length){
+      throw new Error('保存に失敗しました。電波状況を確認してもう一度お試しください。');
+    }
+    return result;
+  }
   function saveTasksByKey(key, newList){
     const oldList = cache[key] || [];
-    diffAndSync(key, oldList, newList);
+    const syncPromise = diffAndSync(key, oldList, newList);
     cache[key] = newList;
+    return syncPromise;
   }
 
   function schedKey(dateStr){ return 'sched-' + dateStr; }
@@ -400,22 +411,37 @@
   }
   function diffAndSync(key, oldList, newList){
     const info = keyToTableInfo(key);
-    if(!info || !currentUserId) return;
+    if(!info || !currentUserId) return Promise.resolve({ errors: [] });
     const oldById = new Map(oldList.map(t=>[String(t.id), t]));
     const newIds = new Set(newList.map(t=>String(t.id)));
+    const ops = [];
     oldById.forEach((_, id)=>{
       if(!newIds.has(id)){
-        sb.from(info.table).delete().eq('id', id).then(({error})=>{ if(error) console.error('delete', error); });
+        ops.push(
+          sb.from(info.table).delete().eq('id', id).then(({error})=>{ if(error){ console.error('delete', error); return error; } return null; })
+        );
       }
     });
     newList.forEach(t=>{
       const old = oldById.get(String(t.id));
       const row = buildRow(info.table, info.extra, t);
       if(!old){
-        sb.from(info.table).insert(row).then(({error})=>{ if(error) console.error('insert', error); });
+        ops.push(
+          sb.from(info.table).insert(row).then(({error})=>{ if(error){ console.error('insert', error); return error; } return null; })
+        );
       } else if(old.name!==t.name || old.min!==t.min || old.time!==t.time || old.deadline!==t.deadline || !!old.done!==!!t.done || !!old.scheduled!==!!t.scheduled){
-        sb.from(info.table).update(row).eq('id', t.id).then(({error})=>{ if(error) console.error('update', error); });
+        ops.push(
+          sb.from(info.table).update(row).eq('id', t.id).then(({error})=>{ if(error){ console.error('update', error); return error; } return null; })
+        );
       }
+    });
+    // Wait for every insert/update/delete to actually reach the server before
+    // callers navigate away or let the user close the app — otherwise a
+    // fire-and-forget request in flight can be dropped (e.g. the tab/app is
+    // closed right after tapping "保存する"), silently losing the new task.
+    return Promise.all(ops).then(results=>{
+      const errors = results.filter(Boolean);
+      return { errors };
     });
   }
 
@@ -1638,36 +1664,44 @@
     saveBtn.addEventListener('click', async ()=>{
       const list = loadTasksByKey(state.formStorageKey);
       const timeVal = (showTimeOption && state.formTimeOn && state.formTime) ? state.formTime : '';
-      if(state.editingTaskId){
-        const t = list.find(x=>String(x.id)===state.editingTaskId);
-        if(t){ t.name = state.formName.trim(); t.min = state.formMin; t.time = timeVal; t.deadline = state.formDeadline || ''; }
-        saveTasksByKey(state.formStorageKey, list);
-      } else if(state.formScope === 'month' && state.formRecurring){
-        saveBtn.disabled = true; saveBtn.textContent = '保存中…';
-        try{
+      saveBtn.disabled = true; saveBtn.textContent = '保存中…';
+      try{
+        if(state.editingTaskId){
+          const t = list.find(x=>String(x.id)===state.editingTaskId);
+          if(t){ t.name = state.formName.trim(); t.min = state.formMin; t.time = timeVal; t.deadline = state.formDeadline || ''; }
+          await mustSync(saveTasksByKey(state.formStorageKey, list));
+        } else if(state.formScope === 'month' && state.formRecurring){
           const dayNum = state.formDeadlineDay ? Number(state.formDeadlineDay) : null;
           const templateId = await createRecurringTemplate(state.formName.trim(), state.formMin, dayNum, state.formStartYm, state.formEndYm);
           const { year, month } = state.monthCursor;
           const deadline = dayNum ? monthDateStr(year, month, Math.min(dayNum, daysInMonth(year, month))) : '';
           list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, deadline, done: false, recurringId: templateId });
-          saveTasksByKey(state.formStorageKey, list);
-        } catch(err){
-          saveBtn.disabled = false; saveBtn.textContent = '保存する';
-          state.formError = (err && err.message) ? err.message : '保存に失敗しました。';
-          render();
-          return;
+          await mustSync(saveTasksByKey(state.formStorageKey, list));
+        } else {
+          list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, time: timeVal, deadline: state.formDeadline || '', done: false });
+          await mustSync(saveTasksByKey(state.formStorageKey, list));
         }
-      } else {
-        list.push({ id: crypto.randomUUID(), name: state.formName.trim(), min: state.formMin, time: timeVal, deadline: state.formDeadline || '', done: false });
-        saveTasksByKey(state.formStorageKey, list);
+      } catch(err){
+        saveBtn.disabled = false; saveBtn.textContent = '保存する';
+        state.formError = (err && err.message) ? err.message : '保存に失敗しました。電波状況を確認してもう一度お試しください。';
+        render();
+        return;
       }
       state.screen = state.formReturnScreen;
       render();
     });
     const delBtn = document.getElementById('deleteBtn');
-    if(delBtn) delBtn.addEventListener('click', ()=>{
+    if(delBtn) delBtn.addEventListener('click', async ()=>{
+      delBtn.disabled = true;
       const list = loadTasksByKey(state.formStorageKey).filter(x=>String(x.id)!==state.editingTaskId);
-      saveTasksByKey(state.formStorageKey, list);
+      try{
+        await mustSync(saveTasksByKey(state.formStorageKey, list));
+      } catch(err){
+        delBtn.disabled = false;
+        state.formError = (err && err.message) ? err.message : '削除に失敗しました。電波状況を確認してもう一度お試しください。';
+        render();
+        return;
+      }
       state.screen = state.formReturnScreen;
       render();
     });
